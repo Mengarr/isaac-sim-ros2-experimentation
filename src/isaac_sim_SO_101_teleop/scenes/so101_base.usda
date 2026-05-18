@@ -1,0 +1,61 @@
+#usda 1.0
+(
+    """
+    SO-101 base scene.
+    This file is a thin composition layer — it only stores references,
+    transforms, physics settings, and lighting. No mesh data is inlined.
+
+    Heavy assets (robot meshes) are referenced from the Isaac Sim asset
+    library and should NOT be committed to git.
+
+    Edit this file to:
+      - Reposition the robot (xformOp:translate on /World/SO101)
+      - Add environment props (tables, walls, objects)
+      - Adjust physics parameters
+      - Add cameras
+
+    Load in Isaac Sim:  File > Open > scenes/so101_base.usda
+    Or in Python:       omni.usd.get_context().open_stage("scenes/so101_base.usda")
+    """
+    defaultPrim = "World"
+    upAxis = "Z"
+    metersPerUnit = 1.0
+)
+
+def Xform "World" {
+
+    # ── Physics scene ──────────────────────────────────────────────────────
+    def PhysicsScene "PhysicsScene" {
+        vector3f physics:gravityDirection = (0, 0, -1)
+        float physics:gravityMagnitude = 9.81
+    }
+
+    # ── Ground plane ───────────────────────────────────────────────────────
+    def Plane "GroundPlane" {
+        float3 xformOp:scale = (10, 10, 1)
+        uniform token[] xformOpOrder = ["xformOp:scale"]
+        rel physics:collisionEnabled = None
+    }
+
+    # ── Dome lighting ──────────────────────────────────────────────────────
+    def DomeLight "DomeLight" {
+        float inputs:intensity = 500
+    }
+
+    # ── SO-101 arm ─────────────────────────────────────────────────────────
+    # Reference path uses the ISAAC_NUCLEUS_SERVER env var at runtime.
+    # If your asset root differs, update this path.
+    def Xform "SO101" (
+        prepend references = @${ISAAC_NUCLEUS_SERVER}/Isaac/Robots/RobotStudio/so101_new_calib/so101_new_calib.usd@
+    )
+    {
+        double3 xformOp:translate = (0, 0, 0)
+        float3  xformOp:rotateXYZ = (0, 0, 0)
+        double3 xformOp:scale     = (1, 1, 1)
+        uniform token[] xformOpOrder = [
+            "xformOp:translate",
+            "xformOp:rotateXYZ",
+            "xformOp:scale"
+        ]
+    }
+}

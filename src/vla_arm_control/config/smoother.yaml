@@ -1,0 +1,18 @@
+smoother_node:
+  ros__parameters:
+    # Rate at which the smoother publishes /joint_commands.
+    execution_frequency_hz: 50.0
+
+    # Maximum number of action chunks to hold in the temporal ensemble buffer.
+    # Older chunks are evicted when this limit is reached, or when their last
+    # trajectory point has passed wall-clock now.
+    max_chunk_buffer_size: 3
+
+    # Exponential decay rate for temporal ensemble weighting.
+    # weight = exp(-lambda * (now - chunk_receive_time))
+    # Higher lambda = more aggressive decay = recent chunks dominate faster.
+    ensemble_lambda: 2.0
+
+    # Must match joint_names in the VLA node and the Isaac Sim robot.
+    # Override via launch argument joint_names:=a,b,c or set here directly.
+    joint_names: []

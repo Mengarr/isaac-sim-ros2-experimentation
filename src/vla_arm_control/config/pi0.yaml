@@ -1,0 +1,32 @@
+pi0_node:
+  ros__parameters:
+    # ---- Base VlaBaseNode parameters ----------------------------------------
+    # Rate at which runInference() is called (calls per second).
+    inference_frequency_hz: 5.0
+
+    # PI-0.5 uses both base and wrist cameras. Set to false to disable wrist sub.
+    use_wrist_camera: true
+
+    # Must match joint_names in smoother.yaml and Isaac Sim robot.
+    joint_names: []
+
+    # Time between consecutive trajectory points in the action chunk (seconds).
+    # chunk_length * action_chunk_dt = planning horizon.
+    # 50 steps * 0.02s = 1.0 second horizon.
+    action_chunk_dt: 0.02
+
+    # ---- PI-0.5-specific parameters -----------------------------------------
+    # Static language instruction. Overridden at runtime by /observations/language_instruction.
+    language_instruction: ""
+
+    # Expected image dimensions (model input). Raw sensor_msgs/Image is stored as-is;
+    # resize to these dims before passing to the model in runInference().
+    image_width: 224
+    image_height: 224
+
+    # Output action dimension: 6 joint angles (rad, absolute) + 1 gripper (0-1).
+    action_dim: 7
+
+    # Number of trajectory points per action chunk.
+    # chunk_length=50 at 0.02s dt → 1-second planning horizon.
+    chunk_length: 50
