@@ -43,14 +43,13 @@ simulation_app = SimulationApp({
 import carb
 import numpy as np
 import threading
-import time
 
 import omni.usd
-import omni.graph.core as og
 from isaacsim.core.api import World
 from isaacsim.core.prims import Articulation
 from isaacsim.core.utils.stage import add_reference_to_stage
 from isaacsim.core.utils.extensions import enable_extension
+from isaacsim.core.utils.types import ArticulationActions
 from isaacsim.storage.native import get_assets_root_path
 from pxr import Gf
 
@@ -233,29 +232,26 @@ def main():
     world.reset()
 
     # --- Articulation ---
-    robot = Articulation(prim_path=ROBOT_PRIM_PATH, name="so101")
+    robot = Articulation(ROBOT_PRIM_PATH, name="so101")
     world.scene.add(robot)
     world.reset()  # second reset initialises articulation
-
-    # Print actual joint names from USD so you can verify / fix JOINT_NAMES
-    actual_names = robot.dof_names
-    carb.log_warn(f"[SO101] Actual DOF names from USD: {actual_names}")
-    print(f"\n>>> SO-101 DOF names from USD: {actual_names}\n")
 
     # Build a position array we'll update each step (start at zeros / home)
     n_dof = robot.num_dof
     joint_positions = np.zeros(n_dof)
 
-    # Map joint name → dof index for fast lookup
-    name_to_idx = {name: i for i, name in enumerate(actual_names)}
-
-    # Warn if any expected joint name is missing
+    # Map joint name → DOF index using the 5.x API (get_dof_index per joint)
+    name_to_idx = {}
     for jname in JOINT_NAMES:
-        if jname not in name_to_idx:
+        try:
+            name_to_idx[jname] = robot.get_dof_index(jname)
+        except Exception:
             carb.log_warn(
-                f"[SO101] Expected joint '{jname}' not found in USD. "
-                f"Available: {actual_names}. Check JOINT_NAMES constant."
+                f"[SO101] Joint '{jname}' not found in articulation. "
+                "Check JOINT_NAMES constant."
             )
+
+    print(f"\n>>> SO-101 DOF count: {n_dof}, mapped joints: {list(name_to_idx.keys())}\n")
 
     # --- ROS2 ---
     rclpy.init()
@@ -291,8 +287,8 @@ def main():
             )
 
         # Send position targets to articulation controller
-        from isaacsim.core.utils.types import ArticulationAction
-        action = ArticulationAction(joint_positions=joint_positions.copy())
+        action = ArticulationActions()
+        action.joint_positions = joint_positions.copy().reshape(1, -1)
         robot.apply_action(action)
 
     # --- Cleanup ---
