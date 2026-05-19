@@ -52,7 +52,7 @@ from isaacsim.core.prims import Articulation
 from isaacsim.core.utils.stage import add_reference_to_stage
 from isaacsim.core.utils.extensions import enable_extension
 from isaacsim.storage.native import get_assets_root_path
-from pxr import UsdGeom, Gf
+from pxr import Gf
 
 # ── 3. Enable ROS2 bridge extension ───────────────────────────────────────────
 enable_extension("isaacsim.ros2.bridge")
@@ -215,9 +215,11 @@ def build_scene(world: World):
 
     add_reference_to_stage(usd_path=robot_usd, prim_path=ROBOT_PRIM_PATH)
 
-    # Lift the arm off the ground (adjust Z if it spawns clipping)
-    robot_xform = UsdGeom.Xformable(stage.GetPrimAtPath(ROBOT_PRIM_PATH))
-    robot_xform.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 0.0))
+    # Adjust spawn position if the arm clips the ground (edit Z as needed).
+    # Set via attribute because the USD already defines xformOp:translate.
+    stage.GetPrimAtPath(ROBOT_PRIM_PATH).GetAttribute("xformOp:translate").Set(
+        Gf.Vec3d(0.0, 0.0, 0.0)
+    )
 
     return world
 

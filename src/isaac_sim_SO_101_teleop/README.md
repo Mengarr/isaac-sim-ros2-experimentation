@@ -42,19 +42,22 @@ the [zenoh session config](https://github.com/ros2/rmw_zenoh/blob/rolling/rmw_ze
 ## Proceedure
 
 ### On Local Machine
-```ros2 launch isaac_sim_SO_101_teleop joy_pub.launch.py```
+
+export ZENOH_SESSION_CONFIG_URI=~/zenoh_client.json5  # pointing to EC2 IP:7447
+export RMW_IMPLEMENTATION=rmw_zenoh_cpp
+ros2 run demo_nodes_cpp listener
 
 ### On Sim Machine (EC2 instance)
-Run script via Isaac Sim's bundled python interpreter: 
-In a fresh terminal:
-Setup ros2 envrionment variables that isaac sim needs:
-```export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/ros/jazzy/opt/zenoh_cpp_vendor/lib```
+#### Terminal 1 - bridge (replaces both rmw_zenohd AND the separate bridge)
+export ROS_DOMAIN_ID=0
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp  # bridge recommends CycloneDDS
+export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST  # prevent DDS leaking outside
+source /opt/ros/jazzy/setup.bash
+zenoh-bridge-ros2dds
 
-```export ROS_DISTRO=jazzy```
-
-```source /opt/ros/jazzy/setup.bash```
-
-```export RMW_IMPLEMENTATION=rmw_zenoh_cpp```
-
-In a terminal IN the DCV session: (otherwise it wont launch the UI)
-```~/IsaacSim/python.sh sim_launcher.py --enable isaacsim.ros2.bridge```
+#### Terminal 2 - Isaac Sim (talks DDS locally, bridge picks it up)
+export ROS_DISTRO=jazzy
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/jazzy/lib
+export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+~/IsaacSim/python.sh sim_launcher.py --enable isaacsim.ros2.bridge
