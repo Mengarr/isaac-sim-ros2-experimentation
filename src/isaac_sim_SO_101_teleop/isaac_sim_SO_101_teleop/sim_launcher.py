@@ -47,8 +47,8 @@ import time
 
 import omni.usd
 import omni.graph.core as og
-from isaacsim.core import World
-from isaacsim.core.prims import SingleArticulation
+from isaacsim.core.api import World
+from isaacsim.core.prims import Articulation
 from isaacsim.core.utils.stage import add_reference_to_stage
 from isaacsim.core.utils.extensions import enable_extension
 from isaacsim.storage.native import get_assets_root_path
@@ -231,7 +231,7 @@ def main():
     world.reset()
 
     # --- Articulation ---
-    robot = SingleArticulation(prim_path=ROBOT_PRIM_PATH, name="so101")
+    robot = Articulation(prim_path=ROBOT_PRIM_PATH, name="so101")
     world.scene.add(robot)
     world.reset()  # second reset initialises articulation
 

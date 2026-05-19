@@ -24,12 +24,18 @@ Source: <YOUR_HOME_PUBLIC_IP>/32
 Note: The /32 means that exact IP only, no range.
 Check your current IP with ```curl ifconfig.me``` and update the rule when it changes
 
-2) Launch the Zenoh router: ```ros2 run rmw_zenoh_cpp rmw_zenohd```
-3) Run nodes
+2) Launch the Zenoh router: ```ros2 run rmw_zenoh_cpp rmw_zenohd -- --listen tcp/0.0.0.0:7447``` 
+- Note: 0.0.0.0 means listen on all interfaces, which ensures it accepts connections coming in via the public IP through AWS NAT.
+3) Test connection
+- ros2 run demo_nodes_py listener
 
 #### On local machine:
-1) Connect to EC2 router explicitly: ```export ZENOH_CONFIG_OVERRIDE='{"mode":"client","connect":{"endpoints":["tcp/<EC2_PUBLIC_IP>:7447"]}}'```
-2) Run nodes
+1) Connect to EC2 router explicitly, using 
+the [zenoh session config](https://github.com/ros2/rmw_zenoh/blob/rolling/rmw_zenoh_cpp/config/DEFAULT_RMW_ZENOH_SESSION_CONFIG.json5), modify the mode to **client** and the connect:endpoints tp your ec2 IP.
+- ```export ZENOH_SESSION_CONFIG_URI=~/Documents/zenoh_session_config.json5``` 
+2) Verify connection 
+- ```nc -zv <EC2 PUBLIC IP> 7447``
+- ```ros2 run demo_nodes_py talker```
 
 ---
 
@@ -40,4 +46,15 @@ Check your current IP with ```curl ifconfig.me``` and update the rule when it ch
 
 ### On Sim Machine (EC2 instance)
 Run script via Isaac Sim's bundled python interpreter: 
-```./python.sh ~/.local/share/ov/pkg/isaac-sim-5.x.x/python.sh sim_launcher.py```
+In a fresh terminal:
+Setup ros2 envrionment variables that isaac sim needs:
+```export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/ros/jazzy/opt/zenoh_cpp_vendor/lib```
+
+```export ROS_DISTRO=jazzy```
+
+```source /opt/ros/jazzy/setup.bash```
+
+```export RMW_IMPLEMENTATION=rmw_zenoh_cpp```
+
+In a terminal IN the DCV session: (otherwise it wont launch the UI)
+```~/IsaacSim/python.sh sim_launcher.py --enable isaacsim.ros2.bridge```
