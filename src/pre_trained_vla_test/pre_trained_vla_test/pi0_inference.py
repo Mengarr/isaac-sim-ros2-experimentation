@@ -60,9 +60,10 @@ class PI0InferenceNode(Node):
 
         self.get_logger().info(f"Loading {_MODEL_ID} ...")
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self._policy = PI0Policy.from_pretrained(_MODEL_ID, torch_dtype=torch.float16)
+        self._policy = PI0Policy.from_pretrained(_MODEL_ID)  # loads to CPU by default
+        self._policy.half()                                   # BF16 → FP16 while still on CPU
+        self._policy.to(self._device)                         # move FP16 weights to GPU (~6.5 GiB)
         self._policy.eval()
-        self._policy.to(self._device)
 
         # Normalization stats are loaded from the pretrained checkpoint
         self._preprocessor, self._postprocessor = make_pre_post_processors(

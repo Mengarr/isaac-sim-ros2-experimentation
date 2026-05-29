@@ -67,3 +67,4 @@ python install/pre_trained_vla_test/lib/pre_trained_vla_test/pi0_inference --ros
 - The node waits silently until all four subscribed topics have published at least one message before running inference
 - Call `policy.reset()` between task episodes — currently this happens automatically on node startup; add a ROS2 service call here if you need mid-session resets
 - Camera key names (`wrist_camera`, `scene_camera`, `base_camera`) may need to be aligned with the keys `lerobot/pi0_base` was trained on — check the model card if inference errors on unrecognised observation keys
+
