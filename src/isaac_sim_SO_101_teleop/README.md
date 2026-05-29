@@ -15,7 +15,7 @@ Isaac Sim 5.x bridge for the SO-101 arm with PS4 DualShock joystick control over
 
 
 #### On EC2
-1) Setup security group: On cloud machine setup a secuirty group rule to restrict inbound traffic on port 7447 to our local IP:
+1) Setup security group: On cloud machine setup a security group rule to restrict inbound traffic on port 7447 to our local IP:
 
 Type: Custom TCP
 Port: 7447
@@ -34,30 +34,22 @@ Check your current IP with ```curl ifconfig.me``` and update the rule when it ch
 the [zenoh session config](https://github.com/ros2/rmw_zenoh/blob/rolling/rmw_zenoh_cpp/config/DEFAULT_RMW_ZENOH_SESSION_CONFIG.json5), modify the mode to **client** and the connect:endpoints tp your ec2 IP.
 - ```export ZENOH_SESSION_CONFIG_URI=~/Documents/zenoh_session_config.json5``` 
 2) Verify connection 
-- ```nc -zv <EC2 PUBLIC IP> 7447``
+- ```nc -zv <EC2 PUBLIC IP> 7447``, *Connection Refused* output means there is nothing listening on the ec2 instance yet..
 - ```ros2 run demo_nodes_py talker```
 
 ---
 
-## Proceedure
+## Procedure
 
 ### On Local Machine
 
-export ZENOH_SESSION_CONFIG_URI=~/zenoh_client.json5  # pointing to EC2 IP:7447
+export ZENOH_SESSION_CONFIG_URI=~/Documents/zenoh_session_config.json5  # pointing to EC2 IP:7447
 export RMW_IMPLEMENTATION=rmw_zenoh_cpp
 ros2 run demo_nodes_cpp listener
 
-### On Sim Machine (EC2 instance)
-#### Terminal 1 - bridge (replaces both rmw_zenohd AND the separate bridge)
-export ROS_DOMAIN_ID=0
-export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp  # bridge recommends CycloneDDS
-export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST  # prevent DDS leaking outside
-source /opt/ros/jazzy/setup.bash
-zenoh-bridge-ros2dds
 
-#### Terminal 2 - Isaac Sim (talks DDS locally, bridge picks it up)
-export ROS_DISTRO=jazzy
-export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/jazzy/lib
-export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-~/IsaacSim/python.sh sim_launcher.py --enable isaacsim.ros2.bridge
+### Terminal Running Issac Sim
+
+ONLY RUN ONCE PER TERMINAL AS IT IS APPENDED TO THE ENV VAR
+```export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/ros/jazzy/lib:/opt/ros/jazzy/opt/zenoh_cpp_vendor/lib```
+
