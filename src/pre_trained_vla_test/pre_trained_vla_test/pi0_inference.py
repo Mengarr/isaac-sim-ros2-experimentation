@@ -16,11 +16,6 @@ Requirements:
   - ROS2 sourced
   - lerobot venv sourced
   - CUDA GPU available
-
-Camera → openpi slot mapping:
-  base_camera  → image.base_0_rgb       (exterior/base view)
-  wrist_camera → image.left_wrist_0_rgb (wrist view)
-  scene_camera → image.right_wrist_0_rgb (scene overview)
 """
 
 import collections
@@ -32,6 +27,7 @@ import torch
 from rclpy.node import Node
 from sensor_msgs.msg import Image, JointState
 
+from lerobot.policies import make_pre_post_processors
 from lerobot.policies.pi0 import PI0Policy
 
 _JOINT_NAMES = [
@@ -45,29 +41,15 @@ _JOINT_NAMES = [
 _NUM_JOINTS = len(_JOINT_NAMES)
 
 _MODEL_ID = "lerobot/pi0_base"
-_IMAGE_SIZE = 224   # pi0 pre-trained image resolution
 _INFERENCE_HZ = 5.0
 _CONTROL_HZ = 50.0
 
 
-def _resize_with_pad(img: np.ndarray, size: int) -> np.ndarray:
-    """Resize HWC uint8 image to (size, size) with letterbox padding, no distortion."""
-    from PIL import Image as PILImage
-    h, w = img.shape[:2]
-    scale = size / max(h, w)
-    new_h, new_w = int(h * scale), int(w * scale)
-    pil = PILImage.fromarray(img).resize((new_w, new_h), PILImage.BILINEAR)
-    canvas = np.zeros((size, size, 3), dtype=np.uint8)
-    pad_y = (size - new_h) // 2
-    pad_x = (size - new_w) // 2
-    canvas[pad_y:pad_y + new_h, pad_x:pad_x + new_w] = np.asarray(pil)
-    return canvas
-
-
-def _ros_image_to_numpy(msg: Image) -> np.ndarray:
-    """Convert sensor_msgs/Image → HWC uint8 RGB numpy array."""
+def _ros_image_to_tensor(msg: Image) -> torch.Tensor:
+    """Convert sensor_msgs/Image → (1, H, W, 3) uint8 CPU tensor (HWC, RGB)."""
     data = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, -1)
-    return data[:, :, :3].copy()  # drop alpha if present
+    rgb = data[:, :, :3].copy()  # drop alpha if present
+    return torch.from_numpy(rgb).unsqueeze(0)  # (1, H, W, 3)
 
 
 class PI0InferenceNode(Node):
@@ -81,7 +63,12 @@ class PI0InferenceNode(Node):
         self._policy = PI0Policy.from_pretrained(_MODEL_ID)
         self._policy.eval()
         self._policy.to(self._device)
-        self._action_dim: int = self._policy.config.action_dim
+
+        # Normalization stats are loaded from the pretrained checkpoint
+        self._preprocessor, self._postprocessor = make_pre_post_processors(
+            self._policy.config,
+            pretrained_path=_MODEL_ID,
+        )
 
         self._lock = threading.Lock()
         self._action_queue: collections.deque = collections.deque()
@@ -154,52 +141,44 @@ class PI0InferenceNode(Node):
             ):
                 return  # Observations not ready yet
 
-            wrist_np = _ros_image_to_numpy(self._obs_wrist)
-            scene_np = _ros_image_to_numpy(self._obs_scene)
-            base_np = _ros_image_to_numpy(self._obs_base)
-            joint_positions = list(self._joint_positions)
+            wrist_t = _ros_image_to_tensor(self._obs_wrist)
+            scene_t = _ros_image_to_tensor(self._obs_scene)
+            base_t = _ros_image_to_tensor(self._obs_base)
+            state_t = torch.tensor(self._joint_positions, dtype=torch.float32).unsqueeze(0)  # (1, 6)
 
         prompt = self.get_parameter("prompt").get_parameter_value().string_value
 
-        # Resize to 224×224 with letterbox padding
-        wrist_img = _resize_with_pad(wrist_np, _IMAGE_SIZE)
-        scene_img = _resize_with_pad(scene_np, _IMAGE_SIZE)
-        base_img = _resize_with_pad(base_np, _IMAGE_SIZE)
-
-        # Pad state from _NUM_JOINTS to model's action_dim
-        state = np.array(joint_positions, dtype=np.float32)
-        state = np.pad(state, (0, max(0, self._action_dim - _NUM_JOINTS)))
-
-        # Build openpi-native observation batch
-        # Images: (H, W, 3) uint8 numpy — model handles normalisation internally
-        # State: unnormalized, padded to action_dim — model handles normalisation internally
-        batch = {
-            "state": state,
-            "image": {
-                "base_0_rgb": base_img,
-                "left_wrist_0_rgb": wrist_img,
-                "right_wrist_0_rgb": scene_img,
-            },
-            "image_mask": {
-                "base_0_rgb": np.True_,
-                "left_wrist_0_rgb": np.True_,
-                "right_wrist_0_rgb": np.True_,
-            },
+        # LeRobot-convention observation batch.
+        # Keys use dot notation: observation.state and observation.images.<cam>.
+        # Images are (1, H, W, 3) uint8; the preprocessor handles resizing and normalisation.
+        # State is (1, 6) float32 in radians; the preprocessor handles normalisation.
+        raw_obs = {
+            "observation.state": state_t,
+            "observation.images.wrist_camera": wrist_t,
+            "observation.images.scene_camera": scene_t,
+            "observation.images.base_camera": base_t,
             "prompt": prompt,
         }
 
         try:
             self.get_logger().debug("Running inference ...")
+            batch = self._preprocessor(raw_obs)
+            batch = {
+                k: v.to(self._device) if isinstance(v, torch.Tensor) else v
+                for k, v in batch.items()
+            }
+
             with torch.no_grad():
                 actions = self._policy.predict_action_chunk(batch)
-                # actions: (1, chunk_size, action_dim) or (chunk_size, action_dim)
+                # actions: (1, chunk_size, action_dim) tensor
 
-            if isinstance(actions, torch.Tensor):
-                actions = actions.cpu().numpy()
-            if actions.ndim == 3:
+            # Postprocessor denormalises actions back to joint space
+            actions = self._postprocessor(actions)
+
+            if actions.dim() == 3:
                 actions = actions.squeeze(0)  # → (chunk_size, action_dim)
 
-            # Keep only the first _NUM_JOINTS dims (SO-101 has 6 joints)
+            # Slice to the joints we control
             actions = actions[:, :_NUM_JOINTS]  # (chunk_size, 6)
 
         except Exception as e:
@@ -207,7 +186,7 @@ class PI0InferenceNode(Node):
             return
 
         with self._lock:
-            self._action_queue = collections.deque(actions)  # each element: (6,) array
+            self._action_queue = collections.deque(actions.cpu().unbind(dim=0))
 
     # ------------------------------------------------------------------
     # Control timer (50 Hz)
@@ -217,7 +196,7 @@ class PI0InferenceNode(Node):
         with self._lock:
             if not self._action_queue:
                 return
-            action = self._action_queue.popleft()  # (6,) numpy array
+            action = self._action_queue.popleft()  # (6,) tensor
 
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
