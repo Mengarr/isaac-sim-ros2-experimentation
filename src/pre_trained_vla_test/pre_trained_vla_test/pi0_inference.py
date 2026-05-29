@@ -28,7 +28,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image, JointState
 
 from lerobot.policies import make_pre_post_processors
-from lerobot.policies.pi0 import PI0Policy
+from lerobot.policies.smolvla import SmolVLAPolicy
 
 _JOINT_NAMES = [
     "shoulder_pan",
@@ -40,7 +40,7 @@ _JOINT_NAMES = [
 ]
 _NUM_JOINTS = len(_JOINT_NAMES)
 
-_MODEL_ID = "lerobot/pi0_base"
+_MODEL_ID = "lerobot/smolvla_base"
 _INFERENCE_HZ = 5.0
 _CONTROL_HZ = 50.0
 
@@ -60,10 +60,9 @@ class PI0InferenceNode(Node):
 
         self.get_logger().info(f"Loading {_MODEL_ID} ...")
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self._policy = PI0Policy.from_pretrained(_MODEL_ID)  # loads to CPU by default
-        self._policy.half()                                   # BF16 → FP16 while still on CPU
-        self._policy.to(self._device)                         # move FP16 weights to GPU (~6.5 GiB)
+        self._policy = SmolVLAPolicy.from_pretrained(_MODEL_ID)
         self._policy.eval()
+        self._policy.to(self._device)
 
         # Normalization stats are loaded from the pretrained checkpoint
         self._preprocessor, self._postprocessor = make_pre_post_processors(
