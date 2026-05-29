@@ -17,6 +17,7 @@ from pathlib import Path
 import torch
 from safetensors.torch import save_file
 
+from lerobot.configs import PreTrainedConfig
 from lerobot.policies.pi0 import PI0Policy
 
 _MODEL_ID = "lerobot/pi0_base"
@@ -36,7 +37,9 @@ def main():
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"Loading {_MODEL_ID} on CPU (FP32, ~13 GiB RAM)...")
-    policy = PI0Policy.from_pretrained(_MODEL_ID)
+    config = PreTrainedConfig.from_pretrained(_MODEL_ID)
+    config.device = "cpu"
+    policy = PI0Policy.from_pretrained(_MODEL_ID, config=config)
 
     total_fp32 = sum(p.numel() * p.element_size() for p in policy.parameters()) / 1024**3
     print(f"Loaded. Weight footprint: {total_fp32:.2f} GiB (FP32)")
