@@ -263,11 +263,7 @@ class DatasetRecorderNode(Node):
             self._save_and_advance()
 
     def _discard_episode(self) -> None:
-        buf = self._dataset.episode_buffer
-        buf["size"] = 0
-        for v in buf.values():
-            if isinstance(v, list):
-                v.clear()
+        self._dataset.clear_episode_buffer()
         self._restart_event.clear()
         self._frame_count = 0
         self._state = State.IDLE
