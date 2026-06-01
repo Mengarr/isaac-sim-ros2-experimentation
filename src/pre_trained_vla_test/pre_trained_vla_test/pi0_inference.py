@@ -60,7 +60,7 @@ class PI0InferenceNode(Node):
 
         self.get_logger().info(f"Loading {_MODEL_ID} ...")
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self._policy = PI0Policy.from_pretrained(_MODEL_ID)
+        self._policy = PI0Policy.from_pretrained(_MODEL_ID) # Loads the model, takes a few minutes
         self._policy.eval()
         self._policy.to(self._device)
 

@@ -13,6 +13,38 @@ Runs `lerobot/pi0_base` (PI0Policy) against an SO-101 arm simulated in Isaac Sim
 - LeRobot venv (includes torch) installed
 - A GPU available for inference
 
+## HuggingFace Access
+
+PI0Policy uses PaliGemma as its vision backbone, which is a **gated model** requiring license acceptance.
+
+1. Accept the license at [huggingface.co/google/paligemma-3b-pt-224](https://huggingface.co/google/paligemma-3b-pt-224)
+2. Generate an access token at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)
+3. Export it in your shell (add to `~/.bashrc` to make permanent):
+
+```bash
+export HF_TOKEN=hf_...
+```
+
+Without this, the node will crash with a `403 Forbidden` error when loading the model.
+
+## Quantising pi0_base to FP16
+
+`lerobot/pi0_base` ships as FP32 (~13 GiB), which exceeds the VRAM of inference-class GPUs like the Tesla T4. Run the quantisation script once on any machine with >14 GiB RAM (no GPU required) to produce a FP16 checkpoint (~6.5 GiB):
+
+```bash
+python src/pre_trained_vla_test/pre_trained_vla_test/quantize_pi0.py
+```
+
+This saves a complete checkpoint to `~/checkpoints/pi0_base_fp16/`. The inference node is already configured to load from this path. To use a different output location:
+
+```bash
+python src/pre_trained_vla_test/pre_trained_vla_test/quantize_pi0.py --output /path/to/pi0_base_fp16
+```
+
+**You must update the model quantization** to `bfloat16` in the `/path/to/pi0_base_fp16/config.json` from `float32`, `float16` is **not** a supported option here.  
+
+Then update `_MODEL_ID` in `pi0_inference.py` to match.
+
 ## Usage
 
 ### 1. Source ROS2
@@ -67,4 +99,3 @@ python install/pre_trained_vla_test/lib/pre_trained_vla_test/pi0_inference --ros
 - The node waits silently until all four subscribed topics have published at least one message before running inference
 - Call `policy.reset()` between task episodes — currently this happens automatically on node startup; add a ROS2 service call here if you need mid-session resets
 - Camera key names (`wrist_camera`, `scene_camera`, `base_camera`) may need to be aligned with the keys `lerobot/pi0_base` was trained on — check the model card if inference errors on unrecognised observation keys
-
