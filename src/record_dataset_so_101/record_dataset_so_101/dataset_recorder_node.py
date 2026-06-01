@@ -32,6 +32,7 @@ class DatasetRecorderNode(Node):
         self.declare_parameter("fps", 30)
         self.declare_parameter("dataset_name", "so101_dataset")
         self.declare_parameter("output_dir", "")
+        self.declare_parameter("streaming_encoding", False)
 
         self._num_episodes = self.get_parameter("num_episodes").value
         self._episode_duration = self.get_parameter("episode_duration").value
@@ -40,6 +41,7 @@ class DatasetRecorderNode(Node):
         self._fps = self.get_parameter("fps").value
         self._dataset_name = self.get_parameter("dataset_name").value
         output_dir = self.get_parameter("output_dir").value
+        self._streaming_encoding = self.get_parameter("streaming_encoding").value
 
         self._root = Path(output_dir).expanduser() if output_dir else None
 
@@ -113,11 +115,23 @@ class DatasetRecorderNode(Node):
 
     def _stdin_loop(self) -> None:
         while True:
-            input()  # block until Enter
+            line = input().strip()
+            if line == "q":
+                self._quit()
+                return
             if self._state == State.IDLE:
                 self._start_event.set()
             elif self._state == State.RECORDING:
                 self._stop_event.set()
+
+    def _quit(self) -> None:
+        self.get_logger().info("Quit requested — finalizing dataset...")
+        if self._state == State.RECORDING:
+            self._dataset.save_episode()
+        if self._dataset is not None:
+            self._dataset.finalize()
+            self.get_logger().info(f"Dataset saved to: {self._dataset.root}")
+        rclpy.shutdown()
 
     # ------------------------------------------------------------------
     # Main timer step
@@ -163,7 +177,8 @@ class DatasetRecorderNode(Node):
             features=features,
             robot_type="so101_follower",
             use_videos=True,
-            image_writer_threads=4,
+            image_writer_threads=0 if self._streaming_encoding else 4,
+            streaming_encoding=self._streaming_encoding,
         )
         if self._root is not None:
             kwargs["root"] = self._root
