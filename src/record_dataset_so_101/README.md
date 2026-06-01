@@ -84,7 +84,8 @@ python install/record_dataset_so_101/lib/record_dataset_so_101/dataset_recorder 
   -p task_description:="pick and place cube" \
   -p fps:=30 \
   -p dataset_name:="so101_cube_task" \
-  -p output_dir:="/data/datasets"
+  -p output_dir:="~/data/datasets" \
+  -p streaming_encoding:=true
 ```
 
 ### Episode workflow

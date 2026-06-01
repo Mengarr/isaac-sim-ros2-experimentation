@@ -17,7 +17,7 @@ class State(Enum):
     WAITING_FOR_SENSORS = auto()
     IDLE = auto()
     RECORDING = auto()
-    RESETTING = auto()
+    CONFIRMING = auto()
     DONE = auto()
 
 
@@ -27,7 +27,6 @@ class DatasetRecorderNode(Node):
 
         self.declare_parameter("num_episodes", 10)
         self.declare_parameter("episode_duration", 60.0)
-        self.declare_parameter("reset_duration", 5.0)
         self.declare_parameter("task_description", "pick and place")
         self.declare_parameter("fps", 30)
         self.declare_parameter("dataset_name", "so101_dataset")
@@ -36,7 +35,6 @@ class DatasetRecorderNode(Node):
 
         self._num_episodes = self.get_parameter("num_episodes").value
         self._episode_duration = self.get_parameter("episode_duration").value
-        self._reset_duration = self.get_parameter("reset_duration").value
         self._task_description = self.get_parameter("task_description").value
         self._fps = self.get_parameter("fps").value
         self._dataset_name = self.get_parameter("dataset_name").value
@@ -61,6 +59,8 @@ class DatasetRecorderNode(Node):
 
         self._start_event = threading.Event()
         self._stop_event = threading.Event()
+        self._confirm_event = threading.Event()
+        self._restart_event = threading.Event()
 
         self.create_subscription(Image, "/wrist_camera/image_raw", self._cb_wrist, 1)
         self.create_subscription(Image, "/base_camera/image_raw", self._cb_base, 1)
@@ -119,10 +119,15 @@ class DatasetRecorderNode(Node):
             if line == "q":
                 self._quit()
                 return
-            if self._state == State.IDLE:
+            if line == "r":
+                if self._state in (State.RECORDING, State.CONFIRMING):
+                    self._restart_event.set()
+            elif self._state == State.IDLE:
                 self._start_event.set()
             elif self._state == State.RECORDING:
                 self._stop_event.set()
+            elif self._state == State.CONFIRMING:
+                self._confirm_event.set()
 
     def _quit(self) -> None:
         self.get_logger().info("Quit requested — finalizing dataset...")
@@ -144,8 +149,8 @@ class DatasetRecorderNode(Node):
             self._check_start()
         elif self._state == State.RECORDING:
             self._record_frame()
-        elif self._state == State.RESETTING:
-            pass  # handled inside _finish_episode via timer/sleep in a thread
+        elif self._state == State.CONFIRMING:
+            self._check_confirm()
 
     def _try_init_dataset(self) -> None:
         with self._lock:
@@ -202,18 +207,22 @@ class DatasetRecorderNode(Node):
             self._state = State.RECORDING
             self.get_logger().info(
                 f"[Episode {self._episode_idx + 1}/{self._num_episodes}] Recording started. "
-                f"Press Enter to stop (max {self._episode_duration}s)."
+                f"Press Enter to stop, 'r' to discard (max {self._episode_duration}s)."
             )
 
     def _record_frame(self) -> None:
+        if self._restart_event.is_set():
+            self._discard_episode()
+            return
+
         elapsed = self.get_clock().now().nanoseconds * 1e-9 - self._episode_start_time
         timed_out = elapsed >= self._episode_duration
         stopped = self._stop_event.is_set()
 
         if stopped or timed_out:
             if timed_out:
-                self.get_logger().info("Episode duration cap reached — stopping episode.")
-            self._finish_episode()
+                self.get_logger().info("Episode duration cap reached.")
+            self._stop_recording()
             return
 
         with self._lock:
@@ -239,14 +248,37 @@ class DatasetRecorderNode(Node):
         self._dataset.add_frame(frame)
         self._frame_count += 1
 
-    def _finish_episode(self) -> None:
-        self._state = State.RESETTING
+    def _stop_recording(self) -> None:
         self._stop_event.clear()
-
+        self._state = State.CONFIRMING
         self.get_logger().info(
-            f"[Episode {self._episode_idx + 1}] Stopped — {self._frame_count} frames. "
-            "Saving episode..."
+            f"[Episode {self._episode_idx + 1}] Stopped — {self._frame_count} frames captured. "
+            "Press Enter to save, or 'r' to discard and re-record."
         )
+
+    def _check_confirm(self) -> None:
+        if self._restart_event.is_set():
+            self._discard_episode()
+        elif self._confirm_event.is_set():
+            self._save_and_advance()
+
+    def _discard_episode(self) -> None:
+        buf = self._dataset.episode_buffer
+        buf["size"] = 0
+        for v in buf.values():
+            if isinstance(v, list):
+                v.clear()
+        self._restart_event.clear()
+        self._frame_count = 0
+        self._state = State.IDLE
+        self.get_logger().info(
+            f"Episode discarded. Press Enter to re-record episode {self._episode_idx + 1} "
+            f"of {self._num_episodes}."
+        )
+
+    def _save_and_advance(self) -> None:
+        self._confirm_event.clear()
+        self.get_logger().info(f"[Episode {self._episode_idx + 1}] Saving...")
         self._dataset.save_episode()
         self._episode_idx += 1
 
@@ -260,17 +292,10 @@ class DatasetRecorderNode(Node):
             rclpy.shutdown()
             return
 
-        self.get_logger().info(
-            f"Resetting for {self._reset_duration}s... "
-            f"({self._num_episodes - self._episode_idx} episodes remaining)"
-        )
-        threading.Thread(target=self._reset_wait, daemon=True).start()
-
-    def _reset_wait(self) -> None:
-        time.sleep(self._reset_duration)
         self._state = State.IDLE
         self.get_logger().info(
-            f"Ready. Press Enter to start episode {self._episode_idx + 1} of {self._num_episodes}."
+            f"Episode saved. Press Enter to start episode {self._episode_idx + 1} "
+            f"of {self._num_episodes}."
         )
 
 
