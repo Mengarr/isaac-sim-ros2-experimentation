@@ -68,14 +68,16 @@ source install/setup.bash
 
 ### Run
 
+Run directly with the venv's Python rather than `ros2 run` — `ros2 run` uses the system interpreter which doesn't have the lerobot dependencies:
+
 ```bash
-ros2 run record_dataset_so_101 dataset_recorder
+python install/record_dataset_so_101/lib/record_dataset_so_101/dataset_recorder
 ```
 
 With custom parameters:
 
 ```bash
-ros2 run record_dataset_so_101 dataset_recorder --ros-args \
+python install/record_dataset_so_101/lib/record_dataset_so_101/dataset_recorder --ros-args \
   -p num_episodes:=10 \
   -p episode_duration:=60.0 \
   -p reset_duration:=5.0 \

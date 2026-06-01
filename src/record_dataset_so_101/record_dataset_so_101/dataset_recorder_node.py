@@ -232,7 +232,7 @@ class DatasetRecorderNode(Node):
             f"[Episode {self._episode_idx + 1}] Stopped — {self._frame_count} frames. "
             "Saving episode..."
         )
-        self._dataset.save_episode(episode_index=self._episode_idx)
+        self._dataset.save_episode()
         self._episode_idx += 1
 
         if self._episode_idx >= self._num_episodes:
