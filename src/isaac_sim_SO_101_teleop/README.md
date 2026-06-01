@@ -39,6 +39,10 @@ the [zenoh session config](https://github.com/ros2/rmw_zenoh/blob/rolling/rmw_ze
 
 ---
 
+## Notes
+
+- **Wrist roll offset**: `so_101_pub.py` applies a fixed +90° offset to `wrist_roll` so that the leader arm's neutral grip orientation feels natural to the operator. Adjust `wrist_offset_deg` in that file if you need a different offset.
+
 ## Procedure
 
 ### On Local Machine

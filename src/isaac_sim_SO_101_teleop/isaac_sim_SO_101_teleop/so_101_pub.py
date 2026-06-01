@@ -86,6 +86,13 @@ class SO101Publisher(Node):
                 mapped.append(_remap(val, in_min, in_max, out_min, out_max, clamp=clamp))
             positions = mapped
 
+        # 90° offset makes the leader arm's neutral wrist pose feel natural to the operator
+        wrist_offset_deg = 90.0
+        positions = [
+            p + wrist_offset_deg if name == "wrist_roll" else p
+            for name, p in zip(names, positions)
+        ]
+
         if self.get_parameter("publish_radians").value:
             positions = [math.radians(p) for p in positions]
 

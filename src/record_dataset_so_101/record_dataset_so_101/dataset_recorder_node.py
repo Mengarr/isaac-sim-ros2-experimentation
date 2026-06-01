@@ -45,7 +45,6 @@ class DatasetRecorderNode(Node):
 
         self._lock = threading.Lock()
         self._img_wrist: np.ndarray | None = None
-        self._img_scene: np.ndarray | None = None
         self._img_base: np.ndarray | None = None
         self._joint_state: np.ndarray | None = None
         self._joint_command: np.ndarray | None = None
@@ -62,7 +61,6 @@ class DatasetRecorderNode(Node):
         self._stop_event = threading.Event()
 
         self.create_subscription(Image, "/wrist_camera/image_raw", self._cb_wrist, 1)
-        self.create_subscription(Image, "/scene_camera/image_raw", self._cb_scene, 1)
         self.create_subscription(Image, "/base_camera/image_raw", self._cb_base, 1)
         self.create_subscription(JointState, "/joint_states", self._cb_joints, 1)
         self.create_subscription(JointState, "/joint_command", self._cb_command, 1)
@@ -87,10 +85,6 @@ class DatasetRecorderNode(Node):
     def _cb_wrist(self, msg: Image) -> None:
         with self._lock:
             self._img_wrist = self._ros_image_to_numpy(msg)
-
-    def _cb_scene(self, msg: Image) -> None:
-        with self._lock:
-            self._img_scene = self._ros_image_to_numpy(msg)
 
     def _cb_base(self, msg: Image) -> None:
         with self._lock:
@@ -145,7 +139,6 @@ class DatasetRecorderNode(Node):
                 x is not None
                 for x in [
                     self._img_wrist,
-                    self._img_scene,
                     self._img_base,
                     self._joint_state,
                     self._joint_command,
@@ -154,13 +147,11 @@ class DatasetRecorderNode(Node):
             if not ready:
                 return
             wrist_shape = list(self._img_wrist.shape)
-            scene_shape = list(self._img_scene.shape)
             base_shape = list(self._img_base.shape)
             n_joints = len(self._joint_state)
 
         features = {
             "observation.images.wrist": {"dtype": "video", "shape": wrist_shape},
-            "observation.images.scene": {"dtype": "video", "shape": scene_shape},
             "observation.images.base": {"dtype": "video", "shape": base_shape},
             "observation.state": {"dtype": "float32", "shape": [n_joints]},
             "action": {"dtype": "float32", "shape": [n_joints]},
@@ -215,7 +206,6 @@ class DatasetRecorderNode(Node):
                 x is None
                 for x in [
                     self._img_wrist,
-                    self._img_scene,
                     self._img_base,
                     self._joint_state,
                     self._joint_command,
@@ -225,7 +215,6 @@ class DatasetRecorderNode(Node):
 
             frame = {
                 "observation.images.wrist": self._img_wrist.copy(),
-                "observation.images.scene": self._img_scene.copy(),
                 "observation.images.base": self._img_base.copy(),
                 "observation.state": self._joint_state.copy(),
                 "action": self._joint_command.copy(),
