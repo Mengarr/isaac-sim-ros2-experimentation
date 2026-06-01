@@ -41,7 +41,7 @@ class DatasetRecorderNode(Node):
         self._dataset_name = self.get_parameter("dataset_name").value
         output_dir = self.get_parameter("output_dir").value
 
-        self._root = Path(output_dir) if output_dir else None
+        self._root = Path(output_dir).expanduser() if output_dir else None
 
         self._lock = threading.Lock()
         self._img_wrist: np.ndarray | None = None
