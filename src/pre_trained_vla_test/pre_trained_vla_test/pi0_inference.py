@@ -40,7 +40,7 @@ _JOINT_NAMES = [
 ]
 _NUM_JOINTS = len(_JOINT_NAMES)
 
-_MODEL_ID = "/home/ubuntu/checkpoints/pi0_base_fp16"
+_MODEL_ID = "lerobot/pi05_libero"
 _INFERENCE_HZ = 5.0
 _CONTROL_HZ = 50.0
 
@@ -57,10 +57,19 @@ class PI0InferenceNode(Node):
         super().__init__("pi0_inference")
 
         self.declare_parameter("prompt", "pick up the object")
+        self.declare_parameter("lora_adapter_path", "")
+        self.declare_parameter("delta_actions", False)
+
+        lora_adapter_path = self.get_parameter("lora_adapter_path").get_parameter_value().string_value
 
         self.get_logger().info(f"Loading {_MODEL_ID} ...")
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self._policy = PI0Policy.from_pretrained(_MODEL_ID) # Loads the model, takes a few minutes
+        self._policy = PI0Policy.from_pretrained(_MODEL_ID)
+        if lora_adapter_path:
+            from peft import PeftModel
+            self.get_logger().info(f"Applying LoRA adapter from {lora_adapter_path} ...")
+            self._policy.model = PeftModel.from_pretrained(self._policy.model, lora_adapter_path)
+            self._policy.model = self._policy.model.merge_and_unload()
         self._policy.eval()
         self._policy.to(self._device)
 
@@ -144,9 +153,11 @@ class PI0InferenceNode(Node):
             wrist_t = _ros_image_to_tensor(self._obs_wrist)
             scene_t = _ros_image_to_tensor(self._obs_scene)
             base_t = _ros_image_to_tensor(self._obs_base)
-            state_t = torch.tensor(self._joint_positions, dtype=torch.float32).unsqueeze(0)  # (1, 6)
+            joint_positions = list(self._joint_positions)
+            state_t = torch.tensor(joint_positions, dtype=torch.float32).unsqueeze(0)  # (1, 6)
 
         prompt = self.get_parameter("prompt").get_parameter_value().string_value
+        delta_actions = self.get_parameter("delta_actions").get_parameter_value().bool_value
 
         # LeRobot-convention observation batch.
         # Keys use dot notation: observation.state and observation.images.<cam>.
@@ -180,6 +191,12 @@ class PI0InferenceNode(Node):
 
             # Slice to the joints we control
             actions = actions[:, :_NUM_JOINTS]  # (chunk_size, 6)
+
+            if delta_actions:
+                # Integrate deltas relative to the state captured at inference time
+                # so the whole chunk is self-consistent regardless of feedback latency.
+                origin = torch.tensor(joint_positions, dtype=actions.dtype)
+                actions = origin + torch.cumsum(actions, dim=0)
 
         except Exception as e:
             self.get_logger().error(f"Inference failed: {e}")

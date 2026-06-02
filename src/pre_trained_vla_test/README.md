@@ -1,6 +1,6 @@
 # pre_trained_vla_test
 
-Runs `lerobot/pi0_base` (PI0Policy) against an SO-101 arm simulated in Isaac Sim. Camera frames and joint states are consumed over ROS2; joint commands are published back to the sim.
+Runs `lerobot/pi05_libero` (PI0Policy) against an SO-101 arm simulated in Isaac Sim. Camera frames and joint states are consumed over ROS2; joint commands are published back to the sim.
 
 ## Prerequisites
 
@@ -81,6 +81,32 @@ The node will download `lerobot/pi0_base` from the Hub on first run (requires in
 
 ```bash
 python install/pre_trained_vla_test/lib/pre_trained_vla_test/pi0_inference --ros-args -p prompt:="place the cup on the plate"
+```
+
+### Using delta actions
+
+If your VLA outputs per-step joint deltas instead of absolute positions, pass `delta_actions:=true`. Each chunk is integrated from the joint state captured at inference time, so the whole chunk is self-consistent regardless of feedback latency.
+
+```bash
+python install/pre_trained_vla_test/lib/pre_trained_vla_test/pi0_inference \
+  --ros-args -p delta_actions:=true
+```
+
+Default is `false` (absolute joint positions).
+
+### Using a LoRA fine-tuned model
+
+Two workflows are supported depending on how your adapter was saved:
+
+**LeRobot training checkpoint** (`lerobot-train --peft.method_type=LORA`): the checkpoint directory already contains the merged weights. Just point `_MODEL_ID` at the checkpoint and omit `lora_adapter_path`.
+
+**Raw PEFT adapter directory** (contains `adapter_config.json` + `adapter_model.safetensors`): keep `_MODEL_ID` pointing at the base model and pass the adapter directory as a ROS param. The adapter is merged into the base weights at startup so there is no inference overhead.
+
+```bash
+python install/pre_trained_vla_test/lib/pre_trained_vla_test/pi0_inference \
+  --ros-args \
+  -p prompt:="place the cup on the plate" \
+  -p lora_adapter_path:="/home/ubuntu/checkpoints/my_lora_adapter"
 ```
 
 ## Topics
