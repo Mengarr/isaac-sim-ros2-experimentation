@@ -40,7 +40,7 @@ _JOINT_NAMES = [
 _NUM_JOINTS = len(_JOINT_NAMES)
 
 _INFERENCE_HZ = 5.0
-_CONTROL_HZ = 50.0
+_CONTROL_HZ = 30.0
 
 
 def _ros_image_to_tensor(msg: Image) -> torch.Tensor:
@@ -213,10 +213,10 @@ class PI0InferenceNode(Node):
         )
 
         if delta_actions:
-            # Integrate deltas relative to the state captured at inference time
-            # so the whole chunk is self-consistent regardless of feedback latency.
+            # LeRobot relative actions: each action[t] = target[t] - current_state,
+            # so convert back to absolute by adding the current state once (no cumsum).
             origin = torch.tensor(joint_positions, dtype=actions.dtype)
-            actions = origin + torch.cumsum(actions, dim=0)
+            actions = actions + origin  # broadcast: (chunk_size, 6) + (6,)
             self.get_logger().info(
                 f"Integrated actions[0]: {actions[0].cpu().tolist()}",
                 throttle_duration_sec=2.0,
