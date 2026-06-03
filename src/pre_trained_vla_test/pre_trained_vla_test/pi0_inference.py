@@ -1,11 +1,10 @@
 """
 pi0_inference.py
 ----------------
-ROS2 node that runs PI0Policy (lerobot/pi0_base) against an SO-101 arm in Isaac Sim.
+ROS2 node that runs PI0Policy against an SO-101 arm in Isaac Sim.
 
 Subscribes to:
   /wrist_camera/image_raw   (sensor_msgs/Image)
-  /scene_camera/image_raw   (sensor_msgs/Image)
   /base_camera/image_raw    (sensor_msgs/Image)
   /joint_states             (sensor_msgs/JointState)
 
@@ -48,7 +47,9 @@ _CONTROL_HZ = 50.0
 def _ros_image_to_tensor(msg: Image) -> torch.Tensor:
     """Convert sensor_msgs/Image → (1, H, W, 3) uint8 CPU tensor (HWC, RGB)."""
     data = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, -1)
-    rgb = data[:, :, :3].copy()  # drop alpha if present
+    rgb = data[:, :, :3].copy()
+    if msg.encoding.lower() == "bgr8":
+        rgb = rgb[:, :, ::-1].copy()
     return torch.from_numpy(rgb).unsqueeze(0)  # (1, H, W, 3)
 
 
@@ -175,7 +176,7 @@ class PI0InferenceNode(Node):
             "observation.state": state_t,
             "observation.images.wrist": wrist_t,
             "observation.images.base": base_t,
-            "prompt": prompt,
+            "task": prompt,
         }
 
         self.get_logger().debug("Running inference ...")
