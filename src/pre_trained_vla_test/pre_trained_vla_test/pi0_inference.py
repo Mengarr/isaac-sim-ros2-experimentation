@@ -28,7 +28,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image, JointState
 
 from lerobot.policies import make_pre_post_processors
-from lerobot.policies.pi0 import PI0Policy
+from lerobot.policies.pi05 import PI05Policy
 
 _JOINT_NAMES = [
     "shoulder_pan",
@@ -71,14 +71,14 @@ class PI0InferenceNode(Node):
             peft_config = PeftConfig.from_pretrained(lora_adapter_path)
             base_path = peft_config.base_model_name_or_path
             self.get_logger().info(f"Loading base model from {base_path} ...")
-            self._policy = PI0Policy.from_pretrained(base_path)
+            self._policy = PI05Policy.from_pretrained(base_path)
             self.get_logger().info(f"Applying LoRA adapter from {lora_adapter_path} ...")
             self._policy = PeftModel.from_pretrained(
                 self._policy, lora_adapter_path, config=peft_config, is_trainable=False
             )
         else:
             self.get_logger().info(f"Loading {model_path} ...")
-            self._policy = PI0Policy.from_pretrained(model_path)
+            self._policy = PI05Policy.from_pretrained(model_path)
         self._policy.eval()
         self._policy.to(self._device)
 

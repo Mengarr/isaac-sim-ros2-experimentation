@@ -21,7 +21,7 @@ from pathlib import Path
 import torch
 from peft import PeftModel
 
-from lerobot.policies.pi0 import PI0Policy
+from lerobot.policies.pi05 import PI05Policy
 
 _DEFAULT_BASE = "lerobot/pi05_libero"
 
@@ -36,7 +36,7 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
 
     print(f"Loading base model from {args.base} ...")
-    policy = PI0Policy.from_pretrained(args.base)
+    policy = PI05Policy.from_pretrained(args.base)
     policy.to("cpu")
 
     print(f"Applying LoRA adapter from {args.adapter} ...")
