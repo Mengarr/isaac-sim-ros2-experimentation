@@ -74,10 +74,12 @@ class PI0InferenceNode(Node):
         self._policy.eval()
         self._policy.to(self._device)
 
-        # Normalization stats are loaded from the pretrained checkpoint
+        # Load normalization stats from the fine-tuned checkpoint if provided,
+        # otherwise fall back to the base model.
+        stats_path = lora_adapter_path if lora_adapter_path else _MODEL_ID
         self._preprocessor, self._postprocessor = make_pre_post_processors(
             self._policy.config,
-            pretrained_path=_MODEL_ID,
+            pretrained_path=stats_path,
         )
 
         self._lock = threading.Lock()
