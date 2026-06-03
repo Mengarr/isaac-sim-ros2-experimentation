@@ -45,21 +45,19 @@ def main():
     policy.model = policy.model.merge_and_unload()
     print("Adapter merged.")
 
-    # Copy config files from the fine-tuned adapter checkpoint so the saved
-    # checkpoint carries the correct feature/camera schema, not the base model's.
-    config_files = [
-        "config.json",
-        "policy_preprocessor.json",
-        "policy_postprocessor.json",
-    ]
-    print(f"Copying fine-tuned config from {args.adapter} ...")
-    for filename in config_files:
-        src = args.adapter / filename
-        if src.exists():
-            shutil.copy(src, args.output / filename)
-            print(f"  {filename}")
-        else:
-            print(f"  {filename} not found in adapter path — skipping")
+    # Copy all config and stats files from the fine-tuned adapter checkpoint.
+    # This includes policy_preprocessor/postprocessor JSONs AND their companion
+    # .safetensors files (normalizer stats). Without the safetensors files the
+    # processor pipeline falls back to hf_hub_download and fails on local paths.
+    # Exclude the PEFT-specific files since weights are already merged above.
+    skip = {"adapter_config.json", "adapter_model.safetensors", "train_config.json", "README.md"}
+    print(f"Copying fine-tuned config and stats from {args.adapter} ...")
+    for src in sorted(args.adapter.iterdir()):
+        if src.name in skip or src.suffix == ".safetensors" and src.name == "adapter_model.safetensors":
+            continue
+        if src.name not in skip:
+            shutil.copy(src, args.output / src.name)
+            print(f"  {src.name}")
 
     weights_path = args.output / "model.safetensors"
     print(f"Saving merged weights to {weights_path} ...")

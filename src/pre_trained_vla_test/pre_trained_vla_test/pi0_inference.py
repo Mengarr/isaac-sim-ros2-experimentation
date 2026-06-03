@@ -44,12 +44,12 @@ _CONTROL_HZ = 50.0
 
 
 def _ros_image_to_tensor(msg: Image) -> torch.Tensor:
-    """Convert sensor_msgs/Image → (1, H, W, 3) uint8 CPU tensor (HWC, RGB)."""
+    """Convert sensor_msgs/Image → (1, 3, H, W) uint8 CPU tensor (CHW, RGB)."""
     data = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, -1)
     rgb = data[:, :, :3].copy()
     if msg.encoding.lower() == "bgr8":
         rgb = rgb[:, :, ::-1].copy()
-    return torch.from_numpy(rgb).unsqueeze(0)  # (1, H, W, 3)
+    return torch.from_numpy(rgb).permute(2, 0, 1).unsqueeze(0)  # (1, 3, H, W)
 
 
 class PI0InferenceNode(Node):
@@ -173,7 +173,7 @@ class PI0InferenceNode(Node):
 
         # LeRobot-convention observation batch.
         # Keys use dot notation: observation.state and observation.images.<cam>.
-        # Images are (1, H, W, 3) uint8; the preprocessor handles resizing and normalisation.
+        # Images are (1, 3, H, W) uint8 CHW; the preprocessor handles resizing and normalisation.
         # State is (1, 6) float32 in radians; the preprocessor handles normalisation.
         raw_obs = {
             "observation.state": state_t,
