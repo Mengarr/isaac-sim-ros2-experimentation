@@ -169,11 +169,12 @@ class DatasetRecorderNode(Node):
             base_shape = list(self._img_base.shape)
             n_joints = len(self._joint_state)
 
+        joint_names = list(self._joint_names) if self._joint_names else [str(i) for i in range(n_joints)]
         features = {
-            "observation.images.wrist": {"dtype": "video", "shape": wrist_shape},
-            "observation.images.base": {"dtype": "video", "shape": base_shape},
-            "observation.state": {"dtype": "float32", "shape": [n_joints]},
-            "action": {"dtype": "float32", "shape": [n_joints]},
+            "observation.images.wrist": {"dtype": "video", "shape": wrist_shape, "names": ["height", "width", "channel"]},
+            "observation.images.base": {"dtype": "video", "shape": base_shape, "names": ["height", "width", "channel"]},
+            "observation.state": {"dtype": "float32", "shape": [n_joints], "names": joint_names},
+            "action": {"dtype": "float32", "shape": [n_joints], "names": joint_names},
         }
 
         kwargs = dict(

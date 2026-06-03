@@ -114,7 +114,6 @@ python install/pre_trained_vla_test/lib/pre_trained_vla_test/pi0_inference \
 | Direction | Topic | Type |
 |-----------|-------|------|
 | Subscribe | `/wrist_camera/image_raw` | `sensor_msgs/Image` |
-| Subscribe | `/scene_camera/image_raw` | `sensor_msgs/Image` |
 | Subscribe | `/base_camera/image_raw` | `sensor_msgs/Image` |
 | Subscribe | `/joint_states` | `sensor_msgs/JointState` |
 | Publish | `/joint_command` | `sensor_msgs/JointState` |
