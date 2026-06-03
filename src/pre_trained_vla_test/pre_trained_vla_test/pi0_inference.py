@@ -70,8 +70,8 @@ class PI0InferenceNode(Node):
         if lora_adapter_path:
             from peft import PeftModel
             self.get_logger().info(f"Applying LoRA adapter from {lora_adapter_path} ...")
-            self._policy.model = PeftModel.from_pretrained(self._policy.model, lora_adapter_path)
-            self._policy.model = self._policy.model.merge_and_unload()
+            self._policy = PeftModel.from_pretrained(self._policy, lora_adapter_path)
+            self._policy = self._policy.merge_and_unload()
         self._policy.eval()
         self._policy.to(self._device)
 

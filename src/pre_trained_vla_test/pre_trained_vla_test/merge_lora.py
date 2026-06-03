@@ -20,7 +20,6 @@ from pathlib import Path
 
 import torch
 from peft import PeftModel
-from safetensors.torch import save_file
 
 from lerobot.policies.pi0 import PI0Policy
 
@@ -41,28 +40,24 @@ def main():
     policy.to("cpu")
 
     print(f"Applying LoRA adapter from {args.adapter} ...")
-    policy.model = PeftModel.from_pretrained(policy.model, str(args.adapter))
-    policy.model = policy.model.merge_and_unload()
+    policy = PeftModel.from_pretrained(policy, str(args.adapter))
+    policy = policy.merge_and_unload()
     print("Adapter merged.")
 
-    # Copy all config and stats files from the fine-tuned adapter checkpoint.
-    # This includes policy_preprocessor/postprocessor JSONs AND their companion
-    # .safetensors files (normalizer stats). Without the safetensors files the
-    # processor pipeline falls back to hf_hub_download and fails on local paths.
-    # Exclude the PEFT-specific files since weights are already merged above.
+    # Save using lerobot's own serialisation so key formats (e.g. layernorm
+    # .dense.weight) are written correctly for from_pretrained to read back.
+    print(f"Saving merged weights to {args.output} ...")
+    policy.save_pretrained(args.output)
+
+    # Overwrite config and stats files with the fine-tuned versions so the
+    # checkpoint carries the correct feature/camera schema and normalisation
+    # stats, not the base model's. Excludes PEFT-specific files.
     skip = {"adapter_config.json", "adapter_model.safetensors", "train_config.json", "README.md"}
     print(f"Copying fine-tuned config and stats from {args.adapter} ...")
     for src in sorted(args.adapter.iterdir()):
-        if src.name in skip or src.suffix == ".safetensors" and src.name == "adapter_model.safetensors":
-            continue
         if src.name not in skip:
             shutil.copy(src, args.output / src.name)
             print(f"  {src.name}")
-
-    weights_path = args.output / "model.safetensors"
-    print(f"Saving merged weights to {weights_path} ...")
-    state_dict = {k: v.contiguous() for k, v in policy.state_dict().items()}
-    save_file(state_dict, str(weights_path))
 
     print("\nDone. Load the merged checkpoint with:")
     print(f"  PI0Policy.from_pretrained('{args.output}')")
