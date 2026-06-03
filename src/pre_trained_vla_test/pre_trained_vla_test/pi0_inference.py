@@ -39,7 +39,6 @@ _JOINT_NAMES = [
 ]
 _NUM_JOINTS = len(_JOINT_NAMES)
 
-_MODEL_ID = "lerobot/pi05_libero"
 _INFERENCE_HZ = 5.0
 _CONTROL_HZ = 50.0
 
@@ -57,15 +56,17 @@ class PI0InferenceNode(Node):
     def __init__(self):
         super().__init__("pi0_inference")
 
+        self.declare_parameter("model_path", "lerobot/pi05_libero")
         self.declare_parameter("prompt", "pick up the object")
         self.declare_parameter("lora_adapter_path", "")
         self.declare_parameter("delta_actions", False)
 
+        model_path = self.get_parameter("model_path").get_parameter_value().string_value
         lora_adapter_path = self.get_parameter("lora_adapter_path").get_parameter_value().string_value
 
-        self.get_logger().info(f"Loading {_MODEL_ID} ...")
+        self.get_logger().info(f"Loading {model_path} ...")
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self._policy = PI0Policy.from_pretrained(_MODEL_ID)
+        self._policy = PI0Policy.from_pretrained(model_path)
         if lora_adapter_path:
             from peft import PeftModel
             self.get_logger().info(f"Applying LoRA adapter from {lora_adapter_path} ...")
@@ -76,7 +77,7 @@ class PI0InferenceNode(Node):
 
         # Load normalization stats from the fine-tuned checkpoint if provided,
         # otherwise fall back to the base model.
-        stats_path = lora_adapter_path if lora_adapter_path else _MODEL_ID
+        stats_path = lora_adapter_path if lora_adapter_path else model_path
         self._preprocessor, self._postprocessor = make_pre_post_processors(
             self._policy.config,
             pretrained_path=stats_path,

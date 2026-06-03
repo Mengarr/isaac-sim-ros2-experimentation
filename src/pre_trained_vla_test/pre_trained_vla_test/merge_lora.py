@@ -8,13 +8,10 @@ The saved checkpoint uses the fine-tuned config (correct feature/camera names)
 with the merged weights, so PI0Policy.from_pretrained(output) just works.
 
 Usage:
-    python merge_lora.py \
-        --base lerobot/pi05_libero \
-        --adapter /home/ubuntu/Downloads/pi05_finetuned/checkpoints/003000/pretrained_model \
-        --output  /home/ubuntu/checkpoints/pi05_merged
-
-    # Optionally override the base model (default: lerobot/pi05_libero):
-    python merge_lora.py --base lerobot/pi05_libero --adapter ... --output ...
+python3 merge_lora.py \
+    --base lerobot/pi05_libero \
+    --adapter /home/ubuntu/Downloads/pi05_finetuned/checkpoints/003000/pretrained_model \
+    --output  /home/ubuntu/checkpoints/pi05_merged
 """
 
 import argparse
