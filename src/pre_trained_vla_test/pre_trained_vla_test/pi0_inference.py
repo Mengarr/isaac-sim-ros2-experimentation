@@ -18,6 +18,7 @@ Requirements:
 """
 
 import collections
+import sys
 import threading
 
 import numpy as np
@@ -109,8 +110,14 @@ class PI0InferenceNode(Node):
         self.create_timer(1.0 / _INFERENCE_HZ, self._inference_step)
         self.create_timer(1.0 / _CONTROL_HZ, self._control_step)
 
+        self._paused = False
+
         self._reset_episode()
         self.get_logger().info("PI0InferenceNode ready.")
+        self.get_logger().info("Commands: pause | resume | reset")
+
+        self._input_thread = threading.Thread(target=self._stdin_listener, daemon=True)
+        self._input_thread.start()
 
     # ------------------------------------------------------------------
     # Subscriber callbacks — cache latest message
@@ -134,6 +141,26 @@ class PI0InferenceNode(Node):
             self._joint_positions = positions
 
     # ------------------------------------------------------------------
+    # Terminal command listener
+    # ------------------------------------------------------------------
+
+    def _stdin_listener(self) -> None:
+        for line in sys.stdin:
+            cmd = line.strip().lower()
+            if cmd in ("pause", "p"):
+                self._paused = True
+                self.get_logger().info("Paused.")
+            elif cmd in ("resume", "r"):
+                self._paused = False
+                self.get_logger().info("Resumed.")
+            elif cmd in ("reset", "rst"):
+                self._reset_episode()
+                self._paused = True
+                self.get_logger().info("Reset. Type 'resume' to start inferring.")
+            else:
+                self.get_logger().warn(f"Unknown command: '{cmd}'. Use pause | resume | reset.")
+
+    # ------------------------------------------------------------------
     # Episode management
     # ------------------------------------------------------------------
 
@@ -147,6 +174,8 @@ class PI0InferenceNode(Node):
     # ------------------------------------------------------------------
 
     def _inference_step(self) -> None:
+        if self._paused:
+            return
         try:
             self._inference_step_impl()
         except Exception as e:
@@ -219,8 +248,9 @@ class PI0InferenceNode(Node):
         )
 
         if delta_actions:
-            # LeRobot relative actions: each action[t] = target[t] - current_state,
-            # so convert back to absolute by adding the current state once (no cumsum).
+            # LeRobot "relative actions" (use_relative_actions=true): every action in the
+            # chunk is an offset from the current state at prediction time, NOT from the
+            # previous action. So integrate by broadcasting current state once — no cumsum.
             origin = torch.tensor(joint_positions, dtype=actions.dtype)
             actions = actions + origin  # broadcast: (chunk_size, 6) + (6,)
             self.get_logger().info(
@@ -236,6 +266,8 @@ class PI0InferenceNode(Node):
     # ------------------------------------------------------------------
 
     def _control_step(self) -> None:
+        if self._paused:
+            return
         with self._lock:
             if not self._action_queue:
                 return

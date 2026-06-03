@@ -58,6 +58,8 @@ class SO101Publisher(Node):
         self.declare_parameter("map_joints", True)
         self.declare_parameter("clamp_joints", True)
         self.declare_parameter("publish_radians", True)
+        # -1 = disabled; 0–100 = % of gripper range from closed that triggers fully-open snap
+        self.declare_parameter("gripper_open_threshold", -1)
 
         config = SO101LeaderConfig(port="/dev/ttyACM0", id="leader")
         self.robot = SO101Leader(config)
@@ -92,6 +94,15 @@ class SO101Publisher(Node):
             p + wrist_offset_deg if name == "wrist_roll" else p
             for name, p in zip(names, positions)
         ]
+
+        gripper_threshold = self.get_parameter("gripper_open_threshold").value
+        if 0 <= gripper_threshold <= 100:
+            g_min, g_max = _OUTPUT_LIMITS["gripper"]
+            cutoff = g_min + (gripper_threshold / 100.0) * (g_max - g_min)
+            positions = [
+                (g_max if p >= cutoff else g_min) if name == "gripper" else p
+                for name, p in zip(names, positions)
+            ]
 
         if self.get_parameter("publish_radians").value:
             positions = [math.radians(p) for p in positions]
