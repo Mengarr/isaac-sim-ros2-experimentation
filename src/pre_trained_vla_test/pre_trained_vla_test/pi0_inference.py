@@ -190,11 +190,16 @@ class PI0InferenceNode(Node):
         }
 
         with torch.no_grad():
-            actions = self._policy.predict_action_chunk(batch)
-            # actions: (1, chunk_size, action_dim) tensor
+            actions_raw = self._policy.predict_action_chunk(batch)
+            # actions_raw: (1, chunk_size, action_dim) tensor
+
+        self.get_logger().info(
+            f"Raw actions[0]: {actions_raw[0, 0, :_NUM_JOINTS].cpu().tolist()}",
+            throttle_duration_sec=2.0,
+        )
 
         # Postprocessor denormalises actions back to joint space
-        actions = self._postprocessor(actions)
+        actions = self._postprocessor(actions_raw)
 
         if actions.dim() == 3:
             actions = actions.squeeze(0)  # → (chunk_size, action_dim)
@@ -202,11 +207,20 @@ class PI0InferenceNode(Node):
         # Slice to the joints we control
         actions = actions[:, :_NUM_JOINTS]  # (chunk_size, 6)
 
+        self.get_logger().info(
+            f"Post actions[0]: {actions[0].cpu().tolist()}",
+            throttle_duration_sec=2.0,
+        )
+
         if delta_actions:
             # Integrate deltas relative to the state captured at inference time
             # so the whole chunk is self-consistent regardless of feedback latency.
             origin = torch.tensor(joint_positions, dtype=actions.dtype)
             actions = origin + torch.cumsum(actions, dim=0)
+            self.get_logger().info(
+                f"Integrated actions[0]: {actions[0].cpu().tolist()}",
+                throttle_duration_sec=2.0,
+            )
 
         with self._lock:
             self._action_queue = collections.deque(actions.cpu().unbind(dim=0))
