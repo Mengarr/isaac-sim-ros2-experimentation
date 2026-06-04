@@ -20,6 +20,7 @@ Requirements:
 import collections
 import sys
 import threading
+import time
 
 import numpy as np
 import rclpy
@@ -105,8 +106,7 @@ class PI0InferenceNode(Node):
         # Publisher
         self._pub = self.create_publisher(JointState, "/joint_command", 10)
 
-        # Timers
-        self.create_timer(1.0 / _INFERENCE_HZ, self._inference_step)
+        # Control timer runs on the executor thread (lightweight — just publishes)
         self.create_timer(1.0 / _CONTROL_HZ, self._control_step)
 
         self._paused = False
@@ -115,6 +115,9 @@ class PI0InferenceNode(Node):
         self.get_logger().info("PI0InferenceNode ready.")
         self.get_logger().info("Commands: pause | resume | reset")
 
+        # Inference and stdin run on their own threads so they don't block the executor
+        self._inference_thread = threading.Thread(target=self._inference_loop, daemon=True)
+        self._inference_thread.start()
         self._input_thread = threading.Thread(target=self._stdin_listener, daemon=True)
         self._input_thread.start()
 
@@ -172,16 +175,24 @@ class PI0InferenceNode(Node):
             self._joint_positions = None
 
     # ------------------------------------------------------------------
-    # Inference timer (~5 Hz)
+    # Inference thread (~5 Hz, runs independently of the ROS executor)
     # ------------------------------------------------------------------
 
-    def _inference_step(self) -> None:
-        if self._paused:
-            return
-        try:
-            self._inference_step_impl()
-        except Exception as e:
-            self.get_logger().error(f"Inference step failed: {type(e).__name__}: {e}", throttle_duration_sec=5.0)
+    def _inference_loop(self) -> None:
+        period = 1.0 / _INFERENCE_HZ
+        while rclpy.ok():
+            t0 = time.monotonic()
+            if not self._paused:
+                try:
+                    self._inference_step_impl()
+                except Exception as e:
+                    self.get_logger().error(
+                        f"Inference step failed: {type(e).__name__}: {e}", throttle_duration_sec=5.0
+                    )
+            elapsed = time.monotonic() - t0
+            sleep_time = period - elapsed
+            if sleep_time > 0:
+                time.sleep(sleep_time)
 
     def _inference_step_impl(self) -> None:
         with self._lock:
