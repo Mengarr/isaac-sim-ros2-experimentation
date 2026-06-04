@@ -20,6 +20,7 @@ Requirements:
 import collections
 import sys
 import threading
+import time
 
 import numpy as np
 import rclpy
@@ -190,6 +191,14 @@ class PI0InferenceNode(Node):
                     self.get_logger().error(
                         f"Inference step failed: {type(e).__name__}: {e}", throttle_duration_sec=5.0
                     )
+            # If the queue is still empty (missing obs, error, or paused), retry after a
+            # short delay so the loop doesn't deadlock waiting for a control-step signal
+            # that will never come.
+            with self._lock:
+                queue_empty = len(self._action_queue) == 0
+            if queue_empty:
+                time.sleep(0.2)
+                self._chunk_done.set()
 
     def _inference_step_impl(self) -> None:
         with self._lock:
