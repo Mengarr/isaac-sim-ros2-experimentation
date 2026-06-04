@@ -20,7 +20,6 @@ Requirements:
 import collections
 import sys
 import threading
-import time
 
 import numpy as np
 import rclpy
@@ -41,7 +40,6 @@ _JOINT_NAMES = [
 ]
 _NUM_JOINTS = len(_JOINT_NAMES)
 
-_INFERENCE_HZ = 5.0
 _CONTROL_HZ = 30.0
 
 
@@ -92,6 +90,8 @@ class PI0InferenceNode(Node):
 
         self._lock = threading.Lock()
         self._action_queue: collections.deque = collections.deque()
+        self._chunk_done = threading.Event()
+        self._chunk_done.set()  # Ready to infer immediately on startup
 
         # Cached observations (None until first message received)
         self._obs_wrist: Image | None = None
@@ -173,15 +173,16 @@ class PI0InferenceNode(Node):
             self._obs_wrist = None
             self._obs_base = None
             self._joint_positions = None
+        self._chunk_done.set()  # Unblock inference thread if it was waiting
 
     # ------------------------------------------------------------------
     # Inference thread (~5 Hz, runs independently of the ROS executor)
     # ------------------------------------------------------------------
 
     def _inference_loop(self) -> None:
-        period = 1.0 / _INFERENCE_HZ
         while rclpy.ok():
-            t0 = time.monotonic()
+            self._chunk_done.wait()
+            self._chunk_done.clear()
             if not self._paused:
                 try:
                     self._inference_step_impl()
@@ -189,10 +190,6 @@ class PI0InferenceNode(Node):
                     self.get_logger().error(
                         f"Inference step failed: {type(e).__name__}: {e}", throttle_duration_sec=5.0
                     )
-            elapsed = time.monotonic() - t0
-            sleep_time = period - elapsed
-            if sleep_time > 0:
-                time.sleep(sleep_time)
 
     def _inference_step_impl(self) -> None:
         with self._lock:
@@ -262,7 +259,7 @@ class PI0InferenceNode(Node):
             self._action_queue = collections.deque(actions.cpu().unbind(dim=0))
 
     # ------------------------------------------------------------------
-    # Control timer (50 Hz)
+    # Control timer (30 Hz)
     # ------------------------------------------------------------------
 
     def _control_step(self) -> None:
@@ -272,6 +269,8 @@ class PI0InferenceNode(Node):
             if not self._action_queue:
                 return
             action = self._action_queue.popleft()  # (6,) tensor
+            if not self._action_queue:
+                self._chunk_done.set()  # Queue just emptied — trigger next inference
 
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
