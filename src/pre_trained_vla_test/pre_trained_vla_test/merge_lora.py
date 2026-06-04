@@ -60,7 +60,7 @@ def main():
             print(f"  {src.name}")
 
     print("\nDone. Load the merged checkpoint with:")
-    print(f"  PI0Policy.from_pretrained('{args.output}')")
+    print(f"  PI05Policy.from_pretrained('{args.output}')")
 
 
 if __name__ == "__main__":

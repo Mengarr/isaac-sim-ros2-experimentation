@@ -60,7 +60,6 @@ class PI0InferenceNode(Node):
         self.declare_parameter("model_path", "lerobot/pi05_libero")
         self.declare_parameter("prompt", "pick up the object")
         self.declare_parameter("lora_adapter_path", "")
-        self.declare_parameter("delta_actions", False)
 
         model_path = self.get_parameter("model_path").get_parameter_value().string_value
         lora_adapter_path = self.get_parameter("lora_adapter_path").get_parameter_value().string_value
@@ -168,6 +167,9 @@ class PI0InferenceNode(Node):
         self._policy.reset()
         with self._lock:
             self._action_queue.clear()
+            self._obs_wrist = None
+            self._obs_base = None
+            self._joint_positions = None
 
     # ------------------------------------------------------------------
     # Inference timer (~5 Hz)
@@ -200,11 +202,9 @@ class PI0InferenceNode(Node):
         with self._lock:
             wrist_t = _ros_image_to_tensor(self._obs_wrist)
             base_t = _ros_image_to_tensor(self._obs_base)
-            joint_positions = list(self._joint_positions)
-            state_t = torch.tensor(joint_positions, dtype=torch.float32).unsqueeze(0)  # (1, 6)
+            state_t = torch.tensor(self._joint_positions, dtype=torch.float32).unsqueeze(0)  # (1, 6)
 
         prompt = self.get_parameter("prompt").get_parameter_value().string_value
-        delta_actions = self.get_parameter("delta_actions").get_parameter_value().bool_value
 
         # LeRobot-convention observation batch.
         # Keys use dot notation: observation.state and observation.images.<cam>.
@@ -246,17 +246,6 @@ class PI0InferenceNode(Node):
             f"Post actions[0]: {actions[0].cpu().tolist()}",
             throttle_duration_sec=2.0,
         )
-
-        if delta_actions:
-            # LeRobot "relative actions" (use_relative_actions=true): every action in the
-            # chunk is an offset from the current state at prediction time, NOT from the
-            # previous action. So integrate by broadcasting current state once — no cumsum.
-            origin = torch.tensor(joint_positions, dtype=actions.dtype)
-            actions = actions + origin  # broadcast: (chunk_size, 6) + (6,)
-            self.get_logger().info(
-                f"Integrated actions[0]: {actions[0].cpu().tolist()}",
-                throttle_duration_sec=2.0,
-            )
 
         with self._lock:
             self._action_queue = collections.deque(actions.cpu().unbind(dim=0))
