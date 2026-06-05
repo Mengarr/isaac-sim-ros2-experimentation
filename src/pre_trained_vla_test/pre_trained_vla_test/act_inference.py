@@ -45,12 +45,16 @@ _CONTROL_HZ = 30.0
 
 
 def _ros_image_to_tensor(msg: Image) -> torch.Tensor:
-    """Convert sensor_msgs/Image → (1, 3, H, W) uint8 CPU tensor (CHW, RGB)."""
+    """Convert sensor_msgs/Image → (1, 3, H, W) float32 [0, 1] CPU tensor (CHW, RGB).
+
+    ACT's NormalizerProcessorStep expects float32 images; passing uint8 causes it to
+    cast its float stats to uint8, which overflows.
+    """
     data = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, -1)
     rgb = data[:, :, :3].copy()
     if msg.encoding.lower() == "bgr8":
         rgb = rgb[:, :, ::-1].copy()
-    return torch.from_numpy(rgb).permute(2, 0, 1).unsqueeze(0)  # (1, 3, H, W)
+    return torch.from_numpy(rgb).permute(2, 0, 1).unsqueeze(0).float() / 255.0  # (1, 3, H, W)
 
 
 class ACTInferenceNode(Node):
