@@ -63,6 +63,7 @@ class ACTInferenceNode(Node):
 
         self.declare_parameter("model_path", "lerobot/act_so101_beyond")
         self.declare_parameter("lora_adapter_path", "")
+        self.declare_parameter("n_action_steps", -1)  # -1 = use full chunk_size
 
         model_path = self.get_parameter("model_path").get_parameter_value().string_value
         lora_adapter_path = self.get_parameter("lora_adapter_path").get_parameter_value().string_value
@@ -83,6 +84,14 @@ class ACTInferenceNode(Node):
             self._policy = ACTPolicy.from_pretrained(model_path)
         self._policy.eval()
         self._policy.to(self._device)
+
+        n_action_steps_param = self.get_parameter("n_action_steps").get_parameter_value().integer_value
+        chunk_size = self._policy.config.chunk_size
+        if n_action_steps_param <= 0 or n_action_steps_param > chunk_size:
+            self._n_action_steps = chunk_size
+        else:
+            self._n_action_steps = n_action_steps_param
+        self.get_logger().info(f"n_action_steps={self._n_action_steps} (chunk_size={chunk_size})")
 
         stats_path = lora_adapter_path if lora_adapter_path else model_path
         self._preprocessor, self._postprocessor = make_pre_post_processors(
@@ -254,8 +263,8 @@ class ACTInferenceNode(Node):
         if actions.dim() == 3:
             actions = actions.squeeze(0)  # → (chunk_size, action_dim)
 
-        # Slice to the joints we control
-        actions = actions[:, :_NUM_JOINTS]  # (chunk_size, 6)
+        # Slice to the joints we control and honour n_action_steps
+        actions = actions[:self._n_action_steps, :_NUM_JOINTS]  # (n_action_steps, 6)
 
         self.get_logger().info(
             f"Post actions[0]: {actions[0].cpu().tolist()}",
