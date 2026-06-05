@@ -29,7 +29,13 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image, JointState
 
 from lerobot.policies import make_pre_post_processors
+from lerobot.policies.pi0 import PI0Policy
 from lerobot.policies.pi05 import PI05Policy
+
+_POLICY_CLASSES = {
+    "pi0": PI0Policy,
+    "pi05": PI05Policy,
+}
 
 _JOINT_NAMES = [
     "shoulder_pan",
@@ -57,11 +63,21 @@ class PI0InferenceNode(Node):
     def __init__(self):
         super().__init__("pi0_inference")
 
-        self.declare_parameter("model_path", "lerobot/pi05_libero")
+        self.declare_parameter("model_type", "pi05")  # "pi0" or "pi05"
+        self.declare_parameter("model_path", "")
         self.declare_parameter("prompt", "pick up the object")
         self.declare_parameter("lora_adapter_path", "")
 
+        model_type = self.get_parameter("model_type").get_parameter_value().string_value
+        if model_type not in _POLICY_CLASSES:
+            raise ValueError(f"model_type must be one of {list(_POLICY_CLASSES)}, got '{model_type}'")
+        PolicyClass = _POLICY_CLASSES[model_type]
+
+        _DEFAULT_MODEL_PATHS = {"pi0": "lerobot/pi0_base", "pi05": "lerobot/pi05_libero"}
         model_path = self.get_parameter("model_path").get_parameter_value().string_value
+        if not model_path:
+            model_path = _DEFAULT_MODEL_PATHS[model_type]
+
         lora_adapter_path = self.get_parameter("lora_adapter_path").get_parameter_value().string_value
 
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -70,14 +86,14 @@ class PI0InferenceNode(Node):
             peft_config = PeftConfig.from_pretrained(lora_adapter_path)
             base_path = peft_config.base_model_name_or_path
             self.get_logger().info(f"Loading base model from {base_path} ...")
-            self._policy = PI05Policy.from_pretrained(base_path)
+            self._policy = PolicyClass.from_pretrained(base_path)
             self.get_logger().info(f"Applying LoRA adapter from {lora_adapter_path} ...")
             self._policy = PeftModel.from_pretrained(
                 self._policy, lora_adapter_path, config=peft_config, is_trainable=False
             )
         else:
-            self.get_logger().info(f"Loading {model_path} ...")
-            self._policy = PI05Policy.from_pretrained(model_path)
+            self.get_logger().info(f"Loading {model_type} from {model_path} ...")
+            self._policy = PolicyClass.from_pretrained(model_path)
         self._policy.eval()
         self._policy.to(self._device)
 
