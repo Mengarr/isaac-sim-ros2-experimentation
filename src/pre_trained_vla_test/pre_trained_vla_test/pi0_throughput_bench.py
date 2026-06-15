@@ -30,19 +30,24 @@ _DEFAULT_MODEL_PATHS = {
     "pi05": "lerobot/pi05_libero",
 }
 
-_NUM_JOINTS = 6
-_IMG_H, _IMG_W = 224, 224
 _PROMPT = "pick up the object"
 
 
-def build_dummy_batch(device: torch.device) -> dict:
-    """Return a raw observation dict with dummy tensors (same shapes as the real node)."""
-    return {
-        "observation.state": torch.zeros(1, _NUM_JOINTS, dtype=torch.float32),
-        "observation.images.wrist": torch.randint(0, 256, (1, 3, _IMG_H, _IMG_W), dtype=torch.uint8),
-        "observation.images.base": torch.randint(0, 256, (1, 3, _IMG_H, _IMG_W), dtype=torch.uint8),
-        "task": _PROMPT,
-    }
+def build_dummy_batch(policy) -> dict:
+    """Build a dummy observation dict matching the exact feature keys in the policy config."""
+    from lerobot.policies.pi0.configuration_pi0 import FeatureType
+
+    batch = {"task": _PROMPT}
+
+    for key, feature in policy.config.input_features.items():
+        if feature.type == FeatureType.VISUAL:
+            c, h, w = feature.shape
+            batch[key] = torch.randint(0, 256, (1, c, h, w), dtype=torch.uint8)
+        elif feature.type == FeatureType.STATE:
+            (dim,) = feature.shape
+            batch[key] = torch.zeros(1, dim, dtype=torch.float32)
+
+    return batch
 
 
 def main() -> None:
@@ -81,6 +86,11 @@ def main() -> None:
         policy.config, pretrained_path=stats_path
     )
 
+    # Show which features the model expects so mismatches are obvious
+    print("Input features:")
+    for key, feat in policy.config.input_features.items():
+        print(f"  {key}: {feat.type.value} {feat.shape}")
+    print()
     print("Model ready. Starting benchmark (Ctrl-C to stop).\n")
 
     iteration = 0
@@ -89,7 +99,7 @@ def main() -> None:
     while True:
         policy.reset()
 
-        raw_obs = build_dummy_batch(device)
+        raw_obs = build_dummy_batch(policy)
         batch = preprocessor(raw_obs)
         batch = {
             k: v.to(device) if isinstance(v, torch.Tensor) else v
