@@ -56,6 +56,7 @@ def main() -> None:
     parser.add_argument("--model_path", default="")
     parser.add_argument("--lora_adapter_path", default="")
     parser.add_argument("--iterations", type=int, default=0, help="0 = run forever")
+    parser.add_argument("--fp16", action="store_true", help="Cast model to fp16 before inference")
     args = parser.parse_args()
 
     model_path = args.model_path or _DEFAULT_MODEL_PATHS[args.model_type]
@@ -80,6 +81,9 @@ def main() -> None:
 
     policy.eval()
     policy.to(device)
+    if args.fp16:
+        policy.half()
+        print("Model cast to fp16.")
 
     stats_path = args.lora_adapter_path if args.lora_adapter_path else model_path
     preprocessor, postprocessor = make_pre_post_processors(
