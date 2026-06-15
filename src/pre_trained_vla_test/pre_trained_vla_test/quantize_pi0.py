@@ -28,11 +28,18 @@ _CONFIG_FILES = ["config.json", "policy_preprocessor.json", "policy_postprocesso
 
 
 def find_snapshot_dir() -> Path:
-    pattern = str(Path.home() / ".cache/huggingface/hub/models--lerobot--pi0_base/snapshots/*/")
-    matches = glob.glob(pattern)
-    if not matches:
-        raise FileNotFoundError("pi0_base not found in HuggingFace cache — run the inference node first to trigger the download")
-    return Path(matches[0])
+    search_roots = [
+        Path("/workspace/.hf_home/hub"),
+        Path.home() / ".cache/huggingface/hub",
+    ]
+    for root in search_roots:
+        matches = glob.glob(str(root / "models--lerobot--pi0_base/snapshots/*/"))
+        if matches:
+            return Path(matches[0])
+    raise FileNotFoundError(
+        "pi0_base not found in HuggingFace cache. Searched:\n"
+        + "\n".join(f"  {r}" for r in search_roots)
+    )
 
 
 def main():
