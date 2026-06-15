@@ -105,9 +105,9 @@ def main() -> None:
 
         raw_obs = build_dummy_batch(policy)
         batch = preprocessor(raw_obs)
-        dtype = torch.float16 if args.fp16 else None
         batch = {
-            k: v.to(device=device, dtype=dtype) if isinstance(v, torch.Tensor) else v
+            k: v.to(device=device, dtype=torch.float16 if args.fp16 and v.is_floating_point() else None)
+            if isinstance(v, torch.Tensor) else v
             for k, v in batch.items()
         }
 
