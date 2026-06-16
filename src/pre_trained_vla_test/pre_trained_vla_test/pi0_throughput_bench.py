@@ -56,7 +56,7 @@ def main() -> None:
     parser.add_argument("--model_path", default="")
     parser.add_argument("--lora_adapter_path", default="")
     parser.add_argument("--iterations", type=int, default=0, help="0 = run forever")
-    parser.add_argument("--fp16", action="store_true", help="Cast model to fp16 before inference")
+    parser.add_argument("--bf16", action="store_true", help="Cast model and float inputs to bf16 before inference")
     args = parser.parse_args()
 
     model_path = args.model_path or _DEFAULT_MODEL_PATHS[args.model_type]
@@ -81,9 +81,9 @@ def main() -> None:
 
     policy.eval()
     policy.to(device)
-    if args.fp16:
-        policy.half()
-        print("Model cast to fp16.")
+    if args.bf16:
+        policy.to(torch.bfloat16)
+        print("Model cast to bf16.")
 
     stats_path = args.lora_adapter_path if args.lora_adapter_path else model_path
     preprocessor, postprocessor = make_pre_post_processors(
@@ -106,7 +106,7 @@ def main() -> None:
         raw_obs = build_dummy_batch(policy)
         batch = preprocessor(raw_obs)
         batch = {
-            k: v.to(device=device, dtype=torch.float16 if args.fp16 and v.is_floating_point() else None)
+            k: v.to(device=device, dtype=torch.bfloat16 if args.bf16 and v.is_floating_point() else None)
             if isinstance(v, torch.Tensor) else v
             for k, v in batch.items()
         }
