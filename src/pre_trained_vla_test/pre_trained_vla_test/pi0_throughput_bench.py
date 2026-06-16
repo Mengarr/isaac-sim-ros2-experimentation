@@ -65,25 +65,26 @@ def main() -> None:
 
     print(f"Device: {device}")
 
+    torch_dtype = torch.bfloat16 if args.bf16 else None
+
     if args.lora_adapter_path:
         from peft import PeftConfig, PeftModel
         peft_config = PeftConfig.from_pretrained(args.lora_adapter_path)
         base_path = peft_config.base_model_name_or_path
         print(f"Loading base model from {base_path} ...")
-        policy = PolicyClass.from_pretrained(base_path)
+        policy = PolicyClass.from_pretrained(base_path, torch_dtype=torch_dtype)
         print(f"Applying LoRA adapter from {args.lora_adapter_path} ...")
         policy = PeftModel.from_pretrained(
             policy, args.lora_adapter_path, config=peft_config, is_trainable=False
         )
     else:
         print(f"Loading {args.model_type} from {model_path} ...")
-        policy = PolicyClass.from_pretrained(model_path)
+        policy = PolicyClass.from_pretrained(model_path, torch_dtype=torch_dtype)
 
+    if args.bf16:
+        print("Model loaded in bf16.")
     policy.eval()
     policy.to(device)
-    if args.bf16:
-        policy.to(torch.bfloat16)
-        print("Model cast to bf16.")
 
     stats_path = args.lora_adapter_path if args.lora_adapter_path else model_path
     preprocessor, postprocessor = make_pre_post_processors(
