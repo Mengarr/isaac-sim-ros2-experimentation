@@ -25,6 +25,8 @@ setup(
     entry_points={
         'console_scripts': [
             'pi0_inference = pre_trained_vla_test.pi0_inference:main',
+            'pi0_inference_server = pre_trained_vla_test.pi0_inference_server:main',
+            'pi0_inference_broker = pre_trained_vla_test.pi0_inference_broker:main',
             'act_inference = pre_trained_vla_test.act_inference:main',
         ],
     },

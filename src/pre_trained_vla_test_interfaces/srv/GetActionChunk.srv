@@ -1,0 +1,5 @@
+sensor_msgs/CompressedImage wrist_image
+sensor_msgs/CompressedImage base_image
+sensor_msgs/JointState joint_state
+---
+sensor_msgs/JointState[] action_chunk
