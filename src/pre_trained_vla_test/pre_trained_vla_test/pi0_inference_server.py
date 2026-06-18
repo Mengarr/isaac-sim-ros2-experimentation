@@ -31,6 +31,7 @@ from sensor_msgs.msg import CompressedImage, JointState
 
 from pre_trained_vla_test_interfaces.srv import GetActionChunk
 
+from lerobot.configs.policies import PreTrainedConfig
 from lerobot.policies import make_pre_post_processors
 from lerobot.policies.pi0 import PI0Policy
 from lerobot.policies.pi05 import PI05Policy
@@ -69,6 +70,12 @@ class PI0InferenceServerNode(Node):
         self.declare_parameter("model_path", "")
         self.declare_parameter("prompt", "pick up the object")
 
+        # torch.compile (max-autotune) is baked into the checkpoint config but is
+        # incompatible with the RTC denoise path (per-timestep recompiles + a CUDA
+        # graphs/autograd crash). Default to disabling it so RTC inference is stable;
+        # set disable_compile:=false to honour the checkpoint's compile_model flag.
+        self.declare_parameter("disable_compile", True)
+
         # Real-Time Chunking (RTC) parameters
         self.declare_parameter("enable_rtc", False)
         self.declare_parameter("execution_horizon", 10)
@@ -86,7 +93,20 @@ class PI0InferenceServerNode(Node):
 
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.get_logger().info(f"Loading {model_type} from {model_path} ...")
-        self._policy = PolicyClass.from_pretrained(model_path)
+
+        # Load the config first so we can override compile_model *before* the model
+        # is built — torch.compile is applied in the model's __init__, so flipping
+        # the flag after from_pretrained would be too late.
+        config = PreTrainedConfig.from_pretrained(model_path)
+        disable_compile = self.get_parameter("disable_compile").get_parameter_value().bool_value
+        if disable_compile and getattr(config, "compile_model", False):
+            self.get_logger().warn(
+                "Disabling torch.compile (compile_model=False): max-autotune is "
+                "incompatible with the RTC denoise path. Set disable_compile:=false "
+                "to re-enable."
+            )
+            config.compile_model = False
+        self._policy = PolicyClass.from_pretrained(model_path, config=config)
 
         # Configure RTC. Inference delay is 0 for this server (the broker requests a
         # new chunk only once the previous one has drained).
