@@ -78,7 +78,11 @@ class PI0InferenceServerNode(Node):
 
         # Real-Time Chunking (RTC) parameters
         self.declare_parameter("enable_rtc", False)
-        self.declare_parameter("execution_horizon", 10)
+        # blend_horizon: how many steps of the new chunk are guided toward the
+        # previous chunk's leftover (the RTC prefix-attention window end). This is
+        # independent of the broker's execution_horizon, which controls how many
+        # actions the broker actually executes before re-planning.
+        self.declare_parameter("blend_horizon", 10)
         self.declare_parameter("max_guidance_weight", 10.0)
 
         model_type = self.get_parameter("model_type").get_parameter_value().string_value
@@ -108,23 +112,26 @@ class PI0InferenceServerNode(Node):
             config.compile_model = False
         self._policy = PolicyClass.from_pretrained(model_path, config=config)
 
-        # Configure RTC. Inference delay is 0 for this server (the broker requests a
-        # new chunk only once the previous one has drained).
+        # Configure RTC. The broker drives this synchronously: it executes its own
+        # execution_horizon actions, stops, then requests the next chunk with
+        # inference_delay=0 and the fixed unexecuted tail as prev_chunk_left_over.
+        # blend_horizon here is the RTC guidance window (how many steps of the new
+        # chunk are blended toward that leftover) and maps to RTCConfig.execution_horizon.
         self._rtc_enabled = self.get_parameter("enable_rtc").get_parameter_value().bool_value
         if self._rtc_enabled:
-            execution_horizon = (
-                self.get_parameter("execution_horizon").get_parameter_value().integer_value
+            blend_horizon = (
+                self.get_parameter("blend_horizon").get_parameter_value().integer_value
             )
             max_guidance_weight = (
                 self.get_parameter("max_guidance_weight").get_parameter_value().double_value
             )
             self.get_logger().info(
-                f"RTC enabled (execution_horizon={execution_horizon}, "
+                f"RTC enabled (blend_horizon={blend_horizon}, "
                 f"max_guidance_weight={max_guidance_weight})."
             )
             self._policy.config.rtc_config = RTCConfig(
                 enabled=True,
-                execution_horizon=execution_horizon,
+                execution_horizon=blend_horizon,
                 max_guidance_weight=max_guidance_weight,
                 prefix_attention_schedule=RTCAttentionSchedule.EXP,
             )

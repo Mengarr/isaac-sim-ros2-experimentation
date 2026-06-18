@@ -10,16 +10,23 @@ background request thread continuously calls the remote /get_action_chunk
 service and merges each returned chunk into the queue.
 
 Real-Time Chunking (RTC):
-  RTC is an *asynchronous* scheme — the request thread re-plans continuously while
-  the control timer keeps draining the queue, so chunks overlap in time. The
-  guidance math runs on the server (it needs the model + autograd), but the
+  This broker uses a *synchronous* RTC scheme. Each round it executes exactly
+  `execution_horizon` actions out of the current chunk and then stops, holding the
+  last commanded position while it requests the next chunk. Because the robot is
+  stationary during inference, the server sees zero inference delay, and the
+  request is built from the freshest possible camera/joint observations — both of
+  which maximise model accuracy at the cost of continuous motion.
+
+  The guidance math runs on the server (it needs the model + autograd), but the
   bookkeeping lives here because only the broker owns the control clock and queue:
-    - prev_chunk_left_over: the unexecuted, time-aligned tail of the previous
-      chunk in raw/normalised action space, sent with each request.
-    - inference_delay: how many actions the robot consumes during one round trip.
-      We can't know the future, so we *predict* it from an EMA of past round
-      trips (in action units), send the prediction, and measure the actual count
-      afterwards to update the estimate.
+    - execution_horizon: how many actions of each chunk we execute before stopping
+      and re-planning (a ROS param). Distinct from the server's blend_horizon, which
+      is the RTC guidance window applied to the new chunk.
+    - prev_chunk_left_over: the fixed, unexecuted tail of the previous chunk
+      (original[execution_horizon:], in raw/normalised action space), time-aligned
+      with the new chunk and sent with each request to guide the seam.
+    - inference_delay: always 0 — nothing is consumed during the round trip, so no
+      actions are committed while inference runs.
 
   When RTC is disabled the broker falls back to the original drain-then-request
   behaviour (optionally waiting pre_request_delay_sec for fresh observations).
@@ -85,44 +92,46 @@ class ActionQueue:
     imports lerobot/torch. Holds two parallel arrays:
       - processed: denormalised actions for execution (T, n_joints)
       - original:  raw/normalised actions for RTC leftover (T, action_dim)
-    `last_index` is the consumption cursor advanced by get(); it doubles as the
-    per-chunk counter used to measure how many actions were consumed during a
-    round trip (it resets to 0 on every merge).
+    `last_index` is the consumption cursor advanced by get(), reset to 0 on every
+    merge.
+
+    In RTC mode consumption is capped at `execution_horizon`: get() serves at most
+    that many actions from each chunk and then starves, which signals the control
+    loop to stop and request the next chunk. The leftover handed to that request is
+    the fixed, unexecuted tail original[execution_horizon:].
     """
 
-    def __init__(self, rtc_enabled: bool):
+    def __init__(self, rtc_enabled: bool, execution_horizon: int):
         self._lock = threading.Lock()
         self._rtc_enabled = rtc_enabled
+        self._execution_horizon = execution_horizon
         self.processed: np.ndarray | None = None
         self.original: np.ndarray | None = None
         self.last_index = 0
 
+    def _limit_locked(self) -> int:
+        """How many actions of the current chunk may be executed."""
+        if self.processed is None:
+            return 0
+        if self._rtc_enabled:
+            return min(self._execution_horizon, len(self.processed))
+        return len(self.processed)
+
     def get(self) -> np.ndarray | None:
         with self._lock:
-            if self.processed is None or self.last_index >= len(self.processed):
+            if self.processed is None or self.last_index >= self._limit_locked():
                 return None
             action = self.processed[self.last_index].copy()
             self.last_index += 1
             return action
 
-    def get_action_index(self) -> int:
-        with self._lock:
-            return self.last_index
-
     def get_left_over(self) -> np.ndarray | None:
-        """Unconsumed raw actions, for RTC prev_chunk_left_over."""
+        """Fixed unexecuted tail original[execution_horizon:], for prev_chunk_left_over."""
         with self._lock:
-            return self._left_over_locked()
-
-    def _left_over_locked(self) -> np.ndarray | None:
-        if self.original is None or self.last_index >= len(self.original):
-            return None
-        return self.original[self.last_index :].copy()
-
-    def snapshot(self) -> tuple[np.ndarray | None, int]:
-        """Atomically capture (leftover, consumption index) for an RTC request."""
-        with self._lock:
-            return self._left_over_locked(), self.last_index
+            if self.original is None:
+                return None
+            tail = self.original[self._execution_horizon :]
+            return tail.copy() if len(tail) > 0 else None
 
     def clear(self) -> None:
         with self._lock:
@@ -132,22 +141,19 @@ class ActionQueue:
 
     def qsize(self) -> int:
         with self._lock:
-            if self.processed is None:
-                return 0
-            return max(0, len(self.processed) - self.last_index)
+            return max(0, self._limit_locked() - self.last_index)
 
-    def merge(self, original: np.ndarray, processed: np.ndarray, delay: int) -> None:
+    def merge(self, original: np.ndarray, processed: np.ndarray) -> None:
         """Insert a new chunk.
 
-        RTC: replace the queue, dropping the first `delay` actions (the robot
-        already committed to them during inference). Non-RTC: append, trimming
-        already-consumed actions to maintain continuity.
+        RTC: replace the queue with the full chunk (inference_delay is always 0, so
+        nothing is dropped); get() will cap execution at execution_horizon. Non-RTC:
+        append, trimming already-consumed actions to maintain continuity.
         """
         with self._lock:
             if self._rtc_enabled:
-                d = max(0, min(delay, len(processed)))
-                self.processed = processed[d:].copy()
-                self.original = original[d:].copy()
+                self.processed = processed.copy()
+                self.original = original.copy()
                 self.last_index = 0
                 return
 
@@ -167,33 +173,31 @@ class PI0InferenceBrokerNode(Node):
         self.declare_parameter("jpeg_quality", 80)
         self._jpeg_quality = self.get_parameter("jpeg_quality").get_parameter_value().integer_value
 
-        # RTC: when enabled, the request thread runs continuously (never drains to
-        # empty). When disabled, it uses the legacy drain-then-request behaviour.
+        # RTC: synchronous re-planning. When enabled, the control loop executes
+        # execution_horizon actions per chunk, then stops and requests the next one
+        # (inference_delay is always 0). When disabled, it uses the legacy
+        # drain-the-whole-chunk-then-request behaviour.
         self.declare_parameter("enable_rtc", False)
         self._rtc_enabled = self.get_parameter("enable_rtc").get_parameter_value().bool_value
 
-        # Initial guess for inference_delay (in action steps), used until the EMA
-        # has seen real round trips. The EMA smoothing factor controls how quickly
-        # the estimate adapts to measured latency.
-        self.declare_parameter("initial_inference_delay", 0)
-        self._delay_ema = float(
-            self.get_parameter("initial_inference_delay").get_parameter_value().integer_value
-        )
-        self.declare_parameter("delay_ema_alpha", 0.3)
-        self._delay_ema_alpha = (
-            self.get_parameter("delay_ema_alpha").get_parameter_value().double_value
+        # How many actions of each chunk to execute before stopping and re-planning.
+        # The leftover sent with each request is chunk_len - execution_horizon. This
+        # is independent of the server's blend_horizon (the RTC guidance window).
+        self.declare_parameter("execution_horizon", 10)
+        self._execution_horizon = (
+            self.get_parameter("execution_horizon").get_parameter_value().integer_value
         )
 
-        # Non-RTC only: optionally wait before sampling observations so the request
-        # is built from the freshest frames/state.
+        # Optionally wait before sampling observations so the request is built from
+        # the freshest frames/state.
         self.declare_parameter("pre_request_delay_sec", 0.0)
         self._pre_request_delay_sec = (
             self.get_parameter("pre_request_delay_sec").get_parameter_value().double_value
         )
 
         self._lock = threading.Lock()
-        self._action_queue = ActionQueue(self._rtc_enabled)
-        # Non-RTC drain-then-request gate.
+        self._action_queue = ActionQueue(self._rtc_enabled, self._execution_horizon)
+        # Drain-then-request gate (used by both modes).
         self._chunk_done = threading.Event()
         self._chunk_done.set()
 
@@ -221,9 +225,12 @@ class PI0InferenceBrokerNode(Node):
 
         self._paused = False
 
-        self.get_logger().info(
-            f"PI0InferenceBrokerNode ready (RTC {'enabled' if self._rtc_enabled else 'disabled'})."
+        rtc_status = (
+            f"enabled (execution_horizon={self._execution_horizon})"
+            if self._rtc_enabled
+            else "disabled"
         )
+        self.get_logger().info(f"PI0InferenceBrokerNode ready (RTC {rtc_status}).")
         self.get_logger().info("Commands: pause | resume | reset")
 
         # Service-request and stdin run on their own threads so they don't block the executor
@@ -279,14 +286,15 @@ class PI0InferenceBrokerNode(Node):
                 time.sleep(0.05)
                 continue
 
-            if not self._rtc_enabled:
-                # Legacy behaviour: wait until the queue empties before re-requesting.
-                self._chunk_done.wait()
-                self._chunk_done.clear()
-                if self._paused:
-                    continue
-                if self._pre_request_delay_sec > 0.0:
-                    time.sleep(self._pre_request_delay_sec)
+            # Both modes wait until the executable portion of the current chunk has
+            # drained before re-requesting: the whole chunk for non-RTC, the first
+            # execution_horizon actions for RTC.
+            self._chunk_done.wait()
+            self._chunk_done.clear()
+            if self._paused:
+                continue
+            if self._pre_request_delay_sec > 0.0:
+                time.sleep(self._pre_request_delay_sec)
 
             try:
                 ok = self._request_step_impl()
@@ -298,11 +306,9 @@ class PI0InferenceBrokerNode(Node):
 
             if not ok:
                 # Missing obs, service down, paused server, or error — back off a little
-                # so we don't busy-spin, then retry. (In RTC mode there is no queue-empty
-                # signal to wait on, so this also serves as the retry cadence.)
+                # so we don't busy-spin, then re-arm the gate to retry.
                 time.sleep(0.05)
-                if not self._rtc_enabled:
-                    self._chunk_done.set()
+                self._chunk_done.set()
 
     def _request_step_impl(self) -> bool:
         """Build a request, call the server, merge the response. Returns True on success."""
@@ -325,31 +331,22 @@ class PI0InferenceBrokerNode(Node):
             self.get_logger().warn("get_action_chunk service unavailable.", throttle_duration_sec=5.0)
             return False
 
-        # Snapshot the leftover and the consumption cursor together: both are anchored
-        # to this instant. leftover[i] is time-aligned with new_chunk[i]; idx0 lets us
-        # measure how many actions are consumed during the round trip.
+        # The robot is stopped while we request, so the leftover is fixed and the
+        # observations are the freshest available. leftover[i] is time-aligned with
+        # new_chunk[i]; inference_delay is always 0 (nothing committed during the
+        # round trip).
         with self._lock:
             wrist_compressed = _ros_image_to_compressed(self._obs_wrist, self._jpeg_quality)
             base_compressed = _ros_image_to_compressed(self._obs_base, self._jpeg_quality)
             joint_state = self._joint_state
 
-        if self._rtc_enabled:
-            leftover, idx0 = self._action_queue.snapshot()
-        else:
-            leftover, idx0 = None, 0
-
-        # Predict inference_delay from the EMA. On a cold start (no leftover) nothing
-        # has been executed yet, so force 0 — we must not drop any of the first chunk.
-        if leftover is None or len(leftover) == 0:
-            predicted_delay = 0
-        else:
-            predicted_delay = max(0, int(round(self._delay_ema)))
+        leftover = self._action_queue.get_left_over() if self._rtc_enabled else None
 
         request = GetActionChunk.Request()
         request.wrist_image = wrist_compressed
         request.base_image = base_compressed
         request.joint_state = joint_state
-        request.inference_delay = predicted_delay
+        request.inference_delay = 0
         if leftover is not None and len(leftover) > 0:
             request.prev_chunk_left_over = leftover.reshape(-1).astype(np.float32).tolist()
             request.prev_chunk_action_dim = int(leftover.shape[1])
@@ -388,24 +385,11 @@ class PI0InferenceBrokerNode(Node):
         )
 
         if self._rtc_enabled:
-            # Measure how many actions were actually consumed during the round trip and
-            # fold it into the EMA for the next prediction. The cursor advanced from
-            # idx0 (and has not been reset since — this loop is the only merger).
-            measured_delay = max(0, self._action_queue.get_action_index() - idx0)
-            self._delay_ema = (
-                self._delay_ema_alpha * measured_delay
-                + (1.0 - self._delay_ema_alpha) * self._delay_ema
-            )
-            if abs(measured_delay - predicted_delay) > 1:
+            if self._execution_horizon >= len(processed):
                 self.get_logger().warn(
-                    f"inference_delay mismatch: predicted={predicted_delay}, "
-                    f"measured={measured_delay}, ema={self._delay_ema:.2f}.",
-                    throttle_duration_sec=5.0,
-                )
-            if predicted_delay >= len(processed):
-                self.get_logger().warn(
-                    "Inference slower than a full chunk — the queue will starve. "
-                    "Reduce chunk consumption rate or speed up the model.",
+                    f"execution_horizon ({self._execution_horizon}) >= chunk length "
+                    f"({len(processed)}) — no leftover to guide the seam; RTC has no "
+                    "effect. Lower execution_horizon.",
                     throttle_duration_sec=5.0,
                 )
 
@@ -416,9 +400,9 @@ class PI0InferenceBrokerNode(Node):
                 # Server returned no raw chunk (shouldn't happen with RTC on) — fall
                 # back to processed so leftover tracking still works.
                 original = processed
-            self._action_queue.merge(original, processed, predicted_delay)
+            self._action_queue.merge(original, processed)
         else:
-            self._action_queue.merge(processed, processed, 0)
+            self._action_queue.merge(processed, processed)
 
         return True
 
@@ -438,8 +422,10 @@ class PI0InferenceBrokerNode(Node):
             action = self._last_command
         else:
             self._last_command = action
-            if not self._rtc_enabled and self._action_queue.qsize() == 0:
-                self._chunk_done.set()  # Queue just emptied — trigger next request
+            if self._action_queue.qsize() == 0:
+                # Executable portion just emptied (full chunk for non-RTC, the first
+                # execution_horizon actions for RTC) — trigger the next request.
+                self._chunk_done.set()
 
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()

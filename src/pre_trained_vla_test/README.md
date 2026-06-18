@@ -128,7 +128,7 @@ python install/pre_trained_vla_test/lib/pre_trained_vla_test/pi0_inference \
 If the machine running Isaac Sim doesn't have a GPU (or you want to keep the sim machine free of the lerobot/torch stack), split inference across two nodes connected over the network:
 
 - **`pi0_inference_server`** — runs on the remote GPU machine. Loads the policy once and serves the `pre_trained_vla_test_interfaces/srv/GetActionChunk` service. Stateless with respect to ROS topics — it never subscribes or publishes anything itself.
-- **`pi0_inference_broker`** — runs locally alongside Isaac Sim. Subscribes to the camera/joint-state topics exactly like the single-node setup, but instead of running inference itself, JPEG-encodes the latest frames and calls `/get_action_chunk` on the remote server whenever its local action queue runs dry. Republishes the returned chunk to `/joint_command` at `30 Hz`, same as the single-node node.
+- **`pi0_inference_broker`** — runs locally alongside Isaac Sim. Subscribes to the camera/joint-state topics exactly like the single-node setup, but instead of running inference itself, JPEG-encodes the latest frames and calls `/get_action_chunk` on the remote server whenever its local action queue runs dry (or, with RTC, after executing `execution_horizon` actions). Republishes the returned chunk to `/joint_command` at `30 Hz`, same as the single-node node.
 
 Both nodes need ROS2 with the same `ROS_DOMAIN_ID` (or otherwise routable DDS discovery) so the broker can reach the server's service over the network. Images are JPEG-compressed before crossing the network to keep bandwidth low.
 
@@ -155,7 +155,9 @@ While running, the server's terminal accepts the same `pause` / `resume` / `rese
 
 #### Real-Time Chunking (RTC)
 
-RTC smooths the seam between consecutive action chunks by treating chunk generation as an inpainting problem: the new chunk is blended with the unexecuted tail of the previous one during the flow-matching denoising loop. It only helps when inference runs *asynchronously* alongside execution (the broker re-plans continuously instead of draining to empty — see below).
+RTC smooths the seam between consecutive action chunks by treating chunk generation as an inpainting problem: the new chunk is blended with the unexecuted tail of the previous one during the flow-matching denoising loop.
+
+This setup drives RTC **synchronously**. The broker executes a fixed number of actions (`execution_horizon`) out of each chunk, then stops — holding the last commanded position — and requests the next chunk, passing the unexecuted tail as the leftover. Because the robot is stationary while inference runs, the server sees zero inference delay and the request is built from the freshest possible observations. Motion is no longer continuous, but accuracy is maximised (latest frame + perfect RTC continuity at the seam).
 
 Enable it on the server and tune the two knobs as ROS params:
 
@@ -165,17 +167,17 @@ python install/pre_trained_vla_test/lib/pre_trained_vla_test/pi0_inference_serve
   -p model_type:=pi05 \
   -p prompt:="place the cup on the plate" \
   -p enable_rtc:=true \
-  -p execution_horizon:=10 \
+  -p blend_horizon:=10 \
   -p max_guidance_weight:=10.0
 ```
 
 | Param | Default | Meaning |
 |-------|---------|---------|
 | `enable_rtc` | `false` | Toggle RTC guidance on the server. |
-| `execution_horizon` | `10` | How many steps of the new chunk are blended with the previous chunk. |
+| `blend_horizon` | `10` | How many steps of the new chunk are blended toward the previous chunk's leftover (the RTC guidance window). Independent of the broker's `execution_horizon`. |
 | `max_guidance_weight` | `10.0` | Upper bound on how strongly consistency with the previous chunk is enforced. |
 
-The `inference_delay` (how many actions the robot consumes during one round trip) is **not** a server param — only the broker can observe it, so the broker predicts it, sends it with each request, and measures the actual value to refine the estimate. `enable_rtc` must be set on **both** the server (for guidance) and the broker (for the queue/leftover bookkeeping).
+`inference_delay` is always `0` in this synchronous scheme (nothing is consumed during the round trip), so it is not a tunable param. `enable_rtc` must be set on **both** the server (for guidance) and the broker (for the queue/leftover bookkeeping).
 
 ### 2. On the machine running Isaac Sim — start the broker
 
@@ -200,17 +202,15 @@ python install/pre_trained_vla_test/lib/pre_trained_vla_test/pi0_inference_broke
   --ros-args \
   -p jpeg_quality:=80 \
   -p enable_rtc:=true \
-  -p initial_inference_delay:=4 \
-  -p delay_ema_alpha:=0.3
+  -p execution_horizon:=10
 ```
 
 | Param | Default | Meaning |
 |-------|---------|---------|
-| `enable_rtc` | `false` | When true, the request thread re-plans continuously (never drains to empty) and tracks the leftover/delay for RTC. When false, uses the legacy drain-then-request behaviour gated by `pre_request_delay_sec`. |
-| `initial_inference_delay` | `0` | Starting guess (in action steps) for `inference_delay`, used until the EMA has seen real round trips. |
-| `delay_ema_alpha` | `0.3` | Smoothing factor for the measured-delay EMA (higher adapts faster). |
+| `enable_rtc` | `false` | When true, the broker executes `execution_horizon` actions per chunk, then stops and re-plans with the unexecuted tail as the RTC leftover. When false, uses the legacy drain-the-whole-chunk-then-request behaviour. |
+| `execution_horizon` | `10` | How many actions of each chunk to execute before stopping and requesting the next one. The leftover sent with each request is `chunk_len - execution_horizon`. Independent of the server's `blend_horizon`. |
 
-With RTC enabled the broker measures `inference_delay` empirically: it records the queue cursor when a request goes out and again when the response arrives — the difference is exactly how many actions the robot executed during the round trip (network + server + GPU). That folds into the EMA used to predict the next request's delay. If a chunk comes back empty (server paused/resetting) the broker never merges it, lets the queue drain, and holds the last commanded position until chunks resume.
+With RTC enabled the broker executes exactly `execution_horizon` actions, holds the last commanded position, and requests the next chunk with `inference_delay=0` and the fixed unexecuted tail (`original[execution_horizon:]`) as `prev_chunk_left_over`. If a chunk comes back empty (server paused/resetting) the broker never merges it and holds position until chunks resume.
 
 ### Topics & service (broker/server)
 
