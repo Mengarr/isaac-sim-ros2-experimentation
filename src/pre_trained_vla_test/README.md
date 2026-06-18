@@ -2,6 +2,11 @@
 
 Runs `lerobot/pi05_libero` (PI0Policy) against an SO-101 arm simulated in Isaac Sim. Camera frames and joint states are consumed over ROS2; joint commands are published back to the sim.
 
+Two ways to run inference:
+
+- **Single-node (`pi0_inference`)** — everything (ROS2 + policy + GPU) runs on the same machine as Isaac Sim.
+- **Broker/server (`pi0_inference_broker` + `pi0_inference_server`)** — splits inference onto a remote GPU machine while Isaac Sim and ROS2 stay local. See [Broker/server (remote GPU) setup](#brokerserver-remote-gpu-setup) below.
+
 ## Prerequisites
 
 - Isaac Sim running with the SO-101 camera action graph publishing:
@@ -10,7 +15,7 @@ Runs `lerobot/pi05_libero` (PI0Policy) against an SO-101 arm simulated in Isaac 
   - `/joint_states`
 - ROS2 Jazzy installed
 - LeRobot venv (includes torch) installed
-- A GPU available for inference
+- A GPU available for inference (locally for the single-node setup, or on a remote machine for the broker/server setup)
 
 ## HuggingFace Access
 
@@ -44,7 +49,7 @@ python src/pre_trained_vla_test/pre_trained_vla_test/quantize_pi0.py --output /p
 
 Then update `_MODEL_ID` in `pi0_inference.py` to match.
 
-## Usage
+## Usage (single-node)
 
 ### 1. Source ROS2
 
@@ -62,6 +67,7 @@ source ~/lerobot/.venv/bin/activate   # adjust path to your venv
 
 ```bash
 cd ~/repos/isaac-sim-ros2-experimentation
+colcon build --packages-select pre_trained_vla_test_interfaces
 colcon build --packages-select pre_trained_vla_test
 source install/setup.bash
 ```
@@ -108,7 +114,7 @@ python install/pre_trained_vla_test/lib/pre_trained_vla_test/pi0_inference \
   -p lora_adapter_path:="/home/ubuntu/checkpoints/my_lora_adapter"
 ```
 
-## Topics
+## Topics (single-node)
 
 | Direction | Topic | Type |
 |-----------|-------|------|
@@ -116,6 +122,105 @@ python install/pre_trained_vla_test/lib/pre_trained_vla_test/pi0_inference \
 | Subscribe | `/base_camera/image_raw` | `sensor_msgs/Image` |
 | Subscribe | `/joint_states` | `sensor_msgs/JointState` |
 | Publish | `/joint_command` | `sensor_msgs/JointState` |
+
+## Broker/server (remote GPU) setup
+
+If the machine running Isaac Sim doesn't have a GPU (or you want to keep the sim machine free of the lerobot/torch stack), split inference across two nodes connected over the network:
+
+- **`pi0_inference_server`** — runs on the remote GPU machine. Loads the policy once and serves the `pre_trained_vla_test_interfaces/srv/GetActionChunk` service. Stateless with respect to ROS topics — it never subscribes or publishes anything itself.
+- **`pi0_inference_broker`** — runs locally alongside Isaac Sim. Subscribes to the camera/joint-state topics exactly like the single-node setup, but instead of running inference itself, JPEG-encodes the latest frames and calls `/get_action_chunk` on the remote server whenever its local action queue runs dry. Republishes the returned chunk to `/joint_command` at `30 Hz`, same as the single-node node.
+
+Both nodes need ROS2 with the same `ROS_DOMAIN_ID` (or otherwise routable DDS discovery) so the broker can reach the server's service over the network. Images are JPEG-compressed before crossing the network to keep bandwidth low.
+
+### 1. On the remote GPU machine — start the server
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/lerobot/.venv/bin/activate
+cd ~/repos/isaac-sim-ros2-experimentation
+colcon build --packages-select pre_trained_vla_test_interfaces pre_trained_vla_test
+source install/setup.bash
+
+python install/pre_trained_vla_test/lib/pre_trained_vla_test/pi0_inference_server \
+  --ros-args \
+  -p model_type:=pi05 \
+  -p prompt:="place the cup on the plate"
+```
+
+`model_type` is `"pi0"` or `"pi05"` (default `"pi05"`). Pass `model_path` to override the default checkpoint.
+
+On startup the server warms the policy up with a few throwaway inferences before advertising the service, so the first real request reflects steady-state latency rather than the cold-start spike (CUDA kernel compilation, cuDNN autotune, allocator warmup).
+
+While running, the server's terminal accepts the same `pause` / `resume` / `reset` commands as the single-node node. While paused or resetting it returns empty chunks (`status=PAUSED`); the broker holds its queue and resumes cleanly.
+
+#### Real-Time Chunking (RTC)
+
+RTC smooths the seam between consecutive action chunks by treating chunk generation as an inpainting problem: the new chunk is blended with the unexecuted tail of the previous one during the flow-matching denoising loop. It only helps when inference runs *asynchronously* alongside execution (the broker re-plans continuously instead of draining to empty — see below).
+
+Enable it on the server and tune the two knobs as ROS params:
+
+```bash
+python install/pre_trained_vla_test/lib/pre_trained_vla_test/pi0_inference_server \
+  --ros-args \
+  -p model_type:=pi05 \
+  -p prompt:="place the cup on the plate" \
+  -p enable_rtc:=true \
+  -p execution_horizon:=10 \
+  -p max_guidance_weight:=10.0
+```
+
+| Param | Default | Meaning |
+|-------|---------|---------|
+| `enable_rtc` | `false` | Toggle RTC guidance on the server. |
+| `execution_horizon` | `10` | How many steps of the new chunk are blended with the previous chunk. |
+| `max_guidance_weight` | `10.0` | Upper bound on how strongly consistency with the previous chunk is enforced. |
+
+The `inference_delay` (how many actions the robot consumes during one round trip) is **not** a server param — only the broker can observe it, so the broker predicts it, sends it with each request, and measures the actual value to refine the estimate. `enable_rtc` must be set on **both** the server (for guidance) and the broker (for the queue/leftover bookkeeping).
+
+### 2. On the machine running Isaac Sim — start the broker
+
+```bash
+source /opt/ros/jazzy/setup.bash
+cd ~/repos/isaac-sim-ros2-experimentation
+colcon build --packages-select pre_trained_vla_test_interfaces pre_trained_vla_test
+source install/setup.bash
+
+python install/pre_trained_vla_test/lib/pre_trained_vla_test/pi0_inference_broker \
+  --ros-args \
+  -p jpeg_quality:=80 \
+  -p pre_request_delay_sec:=2.0
+```
+
+The broker doesn't need the lerobot venv — it has no torch/policy dependency (the RTC queue is a small numpy implementation), so `ros2 run` works fine here (unlike the inference nodes). It accepts the same `pause` / `resume` / `reset` commands in its own terminal.
+
+To run with RTC, enable it on the broker too:
+
+```bash
+python install/pre_trained_vla_test/lib/pre_trained_vla_test/pi0_inference_broker \
+  --ros-args \
+  -p jpeg_quality:=80 \
+  -p enable_rtc:=true \
+  -p initial_inference_delay:=4 \
+  -p delay_ema_alpha:=0.3
+```
+
+| Param | Default | Meaning |
+|-------|---------|---------|
+| `enable_rtc` | `false` | When true, the request thread re-plans continuously (never drains to empty) and tracks the leftover/delay for RTC. When false, uses the legacy drain-then-request behaviour gated by `pre_request_delay_sec`. |
+| `initial_inference_delay` | `0` | Starting guess (in action steps) for `inference_delay`, used until the EMA has seen real round trips. |
+| `delay_ema_alpha` | `0.3` | Smoothing factor for the measured-delay EMA (higher adapts faster). |
+
+With RTC enabled the broker measures `inference_delay` empirically: it records the queue cursor when a request goes out and again when the response arrives — the difference is exactly how many actions the robot executed during the round trip (network + server + GPU). That folds into the EMA used to predict the next request's delay. If a chunk comes back empty (server paused/resetting) the broker never merges it, lets the queue drain, and holds the last commanded position until chunks resume.
+
+### Topics & service (broker/server)
+
+| Node | Direction | Name | Type |
+|------|-----------|------|------|
+| Broker | Subscribe (local) | `/wrist_camera/image_raw` | `sensor_msgs/Image` |
+| Broker | Subscribe (local) | `/base_camera/image_raw` | `sensor_msgs/Image` |
+| Broker | Subscribe (local) | `/joint_states` | `sensor_msgs/JointState` |
+| Broker | Publish (local) | `/joint_command` | `sensor_msgs/JointState` |
+| Broker → Server | Call (remote) | `/get_action_chunk` | `pre_trained_vla_test_interfaces/srv/GetActionChunk` |
 
 ## Notes
 

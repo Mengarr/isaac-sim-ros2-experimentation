@@ -33,6 +33,8 @@ from pre_trained_vla_test_interfaces.srv import GetActionChunk
 from lerobot.policies import make_pre_post_processors
 from lerobot.policies.pi0 import PI0Policy
 from lerobot.policies.pi05 import PI05Policy
+from lerobot.configs.types import RTCAttentionSchedule
+from lerobot.policies.rtc.configuration_rtc import RTCConfig
 
 _POLICY_CLASSES = {
     "pi0": PI0Policy,
@@ -65,7 +67,11 @@ class PI0InferenceServerNode(Node):
         self.declare_parameter("model_type", "pi05")  # "pi0" or "pi05"
         self.declare_parameter("model_path", "")
         self.declare_parameter("prompt", "pick up the object")
-        self.declare_parameter("lora_adapter_path", "")
+
+        # Real-Time Chunking (RTC) parameters
+        self.declare_parameter("enable_rtc", False)
+        self.declare_parameter("execution_horizon", 10)
+        self.declare_parameter("max_guidance_weight", 10.0)
 
         model_type = self.get_parameter("model_type").get_parameter_value().string_value
         if model_type not in _POLICY_CLASSES:
@@ -77,42 +83,57 @@ class PI0InferenceServerNode(Node):
         if not model_path:
             model_path = _DEFAULT_MODEL_PATHS[model_type]
 
-        lora_adapter_path = self.get_parameter("lora_adapter_path").get_parameter_value().string_value
-
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        if lora_adapter_path:
-            from peft import PeftConfig, PeftModel
-            peft_config = PeftConfig.from_pretrained(lora_adapter_path)
-            base_path = peft_config.base_model_name_or_path
-            self.get_logger().info(f"Loading base model from {base_path} ...")
-            self._policy = PolicyClass.from_pretrained(base_path)
-            self.get_logger().info(f"Applying LoRA adapter from {lora_adapter_path} ...")
-            self._policy = PeftModel.from_pretrained(
-                self._policy, lora_adapter_path, config=peft_config, is_trainable=False
+        self.get_logger().info(f"Loading {model_type} from {model_path} ...")
+        self._policy = PolicyClass.from_pretrained(model_path)
+
+        # Configure RTC. Inference delay is 0 for this server (the broker requests a
+        # new chunk only once the previous one has drained).
+        self._rtc_enabled = self.get_parameter("enable_rtc").get_parameter_value().bool_value
+        if self._rtc_enabled:
+            execution_horizon = (
+                self.get_parameter("execution_horizon").get_parameter_value().integer_value
             )
+            max_guidance_weight = (
+                self.get_parameter("max_guidance_weight").get_parameter_value().double_value
+            )
+            self.get_logger().info(
+                f"RTC enabled (execution_horizon={execution_horizon}, "
+                f"max_guidance_weight={max_guidance_weight})."
+            )
+            self._policy.config.rtc_config = RTCConfig(
+                enabled=True,
+                execution_horizon=execution_horizon,
+                max_guidance_weight=max_guidance_weight,
+                prefix_attention_schedule=RTCAttentionSchedule.EXP,
+            )
+            self._policy.init_rtc_processor()
         else:
-            self.get_logger().info(f"Loading {model_type} from {model_path} ...")
-            self._policy = PolicyClass.from_pretrained(model_path)
+            self.get_logger().info("RTC disabled.")
+
         self._policy.eval()
         self._policy.to(self._device)
 
-        # Load normalization stats from the fine-tuned checkpoint if provided,
-        # otherwise fall back to the base model.
-        stats_path = lora_adapter_path if lora_adapter_path else model_path
         self._preprocessor, self._postprocessor = make_pre_post_processors(
             self._policy.config,
-            pretrained_path=stats_path,
+            pretrained_path=model_path,
         )
 
         # Service calls and stdin commands can race against each other.
         self._lock = threading.Lock()
         self._paused = False
 
+        self._policy.reset()
+
+        # Warm the policy up before advertising so the first real request reflects
+        # steady-state latency (the first inference pays CUDA kernel compilation,
+        # cuDNN autotune and allocator warmup — typically several times slower).
+        self._warmup()
+
         self._srv = self.create_service(
             GetActionChunk, "get_action_chunk", self._handle_get_action_chunk
         )
 
-        self._policy.reset()
         self.get_logger().info("PI0InferenceServerNode ready, serving /get_action_chunk.")
         self.get_logger().info("Commands: pause | resume | reset")
 
@@ -143,6 +164,42 @@ class PI0InferenceServerNode(Node):
                 self.get_logger().warn(f"Unknown command: '{cmd}'. Use pause | resume | reset.")
 
     # ------------------------------------------------------------------
+    # Warmup
+    # ------------------------------------------------------------------
+
+    def _make_dummy_batch(self) -> dict:
+        """Zeroed observation batch matching the real request shapes (for warmup).
+
+        Image size is arbitrary — the preprocessor resizes to the policy's expected
+        resolution — so any reasonable HxW works.
+        """
+        dummy_img = torch.zeros((1, 3, 224, 224), dtype=torch.uint8)
+        raw_obs = {
+            "observation.state": torch.zeros((1, _NUM_JOINTS), dtype=torch.float32),
+            "observation.images.wrist": dummy_img,
+            "observation.images.base": dummy_img.clone(),
+            "task": "warmup",
+        }
+        batch = self._preprocessor(raw_obs)
+        return {
+            k: v.to(self._device) if isinstance(v, torch.Tensor) else v
+            for k, v in batch.items()
+        }
+
+    def _warmup(self, iterations: int = 3) -> None:
+        self.get_logger().info(f"Warming up policy ({iterations} iterations) ...")
+        batch = self._make_dummy_batch()
+        with torch.no_grad():
+            for _ in range(iterations):
+                # No RTC kwargs → prev_chunk_left_over is None → no guidance applied,
+                # but the model's denoising/forward kernels still compile and warm.
+                self._policy.predict_action_chunk(batch)
+        if self._device.type == "cuda":
+            torch.cuda.synchronize()
+        self._policy.reset()  # discard any state the warmup left behind
+        self.get_logger().info("Warmup complete.")
+
+    # ------------------------------------------------------------------
     # Service callback — runs synchronously on the executor thread
     # ------------------------------------------------------------------
 
@@ -153,6 +210,7 @@ class PI0InferenceServerNode(Node):
             paused = self._paused
         if paused:
             self.get_logger().warn("Inference paused — returning empty action chunk.", throttle_duration_sec=5.0)
+            response.status = GetActionChunk.Response.STATUS_PAUSED
             return response
 
         name_to_pos = dict(zip(request.joint_state.name, request.joint_state.position))
@@ -160,6 +218,7 @@ class PI0InferenceServerNode(Node):
             joint_positions = [name_to_pos[n] for n in _JOINT_NAMES]
         except KeyError:
             self.get_logger().error("Request joint_state is missing required joints.")
+            response.status = GetActionChunk.Response.STATUS_ERROR
             return response
 
         wrist_t = _compressed_image_to_tensor(request.wrist_image)
@@ -179,6 +238,18 @@ class PI0InferenceServerNode(Node):
             "task": prompt,
         }
 
+        # Unpack the RTC leftover sent by the broker. It is the unexecuted tail of the
+        # previous chunk in raw/normalised action space, time-aligned with the new chunk.
+        prev_chunk_left_over = None
+        if (
+            self._rtc_enabled
+            and len(request.prev_chunk_left_over) > 0
+            and request.prev_chunk_action_dim > 0
+        ):
+            adim = int(request.prev_chunk_action_dim)
+            leftover_np = np.asarray(request.prev_chunk_left_over, dtype=np.float32).reshape(-1, adim)
+            prev_chunk_left_over = torch.from_numpy(leftover_np).to(self._device)
+
         self.get_logger().debug("Running inference ...")
         with self._lock:
             batch = self._preprocessor(raw_obs)
@@ -188,7 +259,18 @@ class PI0InferenceServerNode(Node):
             }
 
             with torch.no_grad():
-                actions_raw = self._policy.predict_action_chunk(batch)
+                if self._rtc_enabled:
+                    # Blend the new chunk with the unexecuted tail of the previous chunk.
+                    # inference_delay (predicted by the broker) positions the prefix
+                    # weights: the first inference_delay steps are frozen to what the
+                    # robot already committed to during the round trip.
+                    actions_raw = self._policy.predict_action_chunk(
+                        batch,
+                        inference_delay=int(request.inference_delay),
+                        prev_chunk_left_over=prev_chunk_left_over,
+                    )
+                else:
+                    actions_raw = self._policy.predict_action_chunk(batch)
                 # actions_raw: (1, chunk_size, action_dim) tensor
 
             self.get_logger().info(
@@ -198,6 +280,13 @@ class PI0InferenceServerNode(Node):
 
             # Postprocessor denormalises actions back to joint space
             actions = self._postprocessor(actions_raw)
+
+        # Raw chunk (full action_dim, normalised) → returned so the broker can compute
+        # the leftover for the next RTC request.
+        if self._rtc_enabled:
+            raw_np = actions_raw.squeeze(0).detach().cpu().numpy().astype(np.float32)  # (chunk, action_dim)
+            response.raw_chunk = raw_np.reshape(-1).tolist()
+            response.raw_chunk_action_dim = int(raw_np.shape[1])
 
         if actions.dim() == 3:
             actions = actions.squeeze(0)  # → (chunk_size, action_dim)
@@ -218,6 +307,7 @@ class PI0InferenceServerNode(Node):
             joint_state.position = action.tolist()
             response.action_chunk.append(joint_state)
 
+        response.status = GetActionChunk.Response.STATUS_OK
         return response
 
 

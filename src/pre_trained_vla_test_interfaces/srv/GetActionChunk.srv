@@ -1,5 +1,29 @@
+# Request
 sensor_msgs/CompressedImage wrist_image
 sensor_msgs/CompressedImage base_image
 sensor_msgs/JointState joint_state
+
+# Real-Time Chunking (RTC) inputs. Ignored by the server when RTC is disabled.
+# prev_chunk_left_over is the row-major flatten of the unexecuted tail of the
+# previous chunk in raw/normalised action space, shape (T_prev, action_dim).
+# Empty when there is no previous chunk (cold start / post-reset).
+float32[] prev_chunk_left_over
+int32 prev_chunk_action_dim
+# Predicted number of actions the robot will consume during this inference pass,
+# used to position the RTC prefix-attention weights.
+int32 inference_delay
 ---
+# Response
+uint8 STATUS_OK=0
+uint8 STATUS_PAUSED=1
+uint8 STATUS_ERROR=2
+uint8 status
+
+# Denormalised actions ready to execute (one JointState per timestep).
 sensor_msgs/JointState[] action_chunk
+
+# Raw/normalised actions, row-major flatten of shape (T, action_dim). The broker
+# keeps these to compute prev_chunk_left_over for the next RTC request. Empty
+# when RTC is disabled.
+float32[] raw_chunk
+int32 raw_chunk_action_dim
