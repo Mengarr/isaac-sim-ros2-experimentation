@@ -199,13 +199,35 @@ class PI0InferenceServerNode(Node):
                 t_iter = time.perf_counter()
                 # No RTC kwargs → prev_chunk_left_over is None → no guidance applied,
                 # but the model's denoising/forward kernels still compile and warm.
-                self._policy.predict_action_chunk(batch)
+                last_chunk = self._policy.predict_action_chunk(batch)
                 if self._device.type == "cuda":
                     torch.cuda.synchronize()
                 self.get_logger().info(
                     f"  warmup iteration {i}/{iterations} done "
                     f"({time.perf_counter() - t_iter:.2f}s)"
                 )
+
+            # The guidance path (non-None prev_chunk_left_over, non-zero inference_delay)
+            # uses different kernels that Inductor only compiles the first time it runs.
+            # Real requests don't hit it until the *second* call (the cold-start request
+            # has no leftover), so without this the compile stalls the second live request
+            # past the broker's timeout. Drive it here with a real-shaped leftover.
+            if self._rtc_enabled:
+                # last_chunk: (1, chunk, action_dim) → leftover is (chunk, action_dim)
+                leftover = last_chunk.squeeze(0)
+                for i in range(1, iterations + 1):
+                    t_iter = time.perf_counter()
+                    self._policy.predict_action_chunk(
+                        batch,
+                        inference_delay=1,
+                        prev_chunk_left_over=leftover,
+                    )
+                    if self._device.type == "cuda":
+                        torch.cuda.synchronize()
+                    self.get_logger().info(
+                        f"  RTC guidance warmup iteration {i}/{iterations} done "
+                        f"({time.perf_counter() - t_iter:.2f}s)"
+                    )
         self._policy.reset()  # discard any state the warmup left behind
         self.get_logger().info(
             f"Warmup complete ({time.perf_counter() - t_start:.2f}s total)."
