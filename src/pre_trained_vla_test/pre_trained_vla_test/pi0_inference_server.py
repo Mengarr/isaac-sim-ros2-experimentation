@@ -20,6 +20,7 @@ Requirements:
 
 import sys
 import threading
+import time
 
 import cv2
 import numpy as np
@@ -187,17 +188,28 @@ class PI0InferenceServerNode(Node):
         }
 
     def _warmup(self, iterations: int = 3) -> None:
-        self.get_logger().info(f"Warming up policy ({iterations} iterations) ...")
+        self.get_logger().info(
+            f"Warming up policy ({iterations} iterations) — first iteration is slow "
+            "(CUDA init, cuDNN autotune, kernel compile) ..."
+        )
         batch = self._make_dummy_batch()
+        t_start = time.perf_counter()
         with torch.no_grad():
-            for _ in range(iterations):
+            for i in range(1, iterations + 1):
+                t_iter = time.perf_counter()
                 # No RTC kwargs → prev_chunk_left_over is None → no guidance applied,
                 # but the model's denoising/forward kernels still compile and warm.
                 self._policy.predict_action_chunk(batch)
-        if self._device.type == "cuda":
-            torch.cuda.synchronize()
+                if self._device.type == "cuda":
+                    torch.cuda.synchronize()
+                self.get_logger().info(
+                    f"  warmup iteration {i}/{iterations} done "
+                    f"({time.perf_counter() - t_iter:.2f}s)"
+                )
         self._policy.reset()  # discard any state the warmup left behind
-        self.get_logger().info("Warmup complete.")
+        self.get_logger().info(
+            f"Warmup complete ({time.perf_counter() - t_start:.2f}s total)."
+        )
 
     # ------------------------------------------------------------------
     # Service callback — runs synchronously on the executor thread
