@@ -29,20 +29,31 @@ model represents the grasp as multimodal at that observation.
 Usage (N is the number of samples / batch size):
   ros2 run pre_trained_vla_test probe_marginal --ros-args -p num_samples:=50
 
+Headless mode (no live windows — useful over SSH / without a display):
+  ros2 run pre_trained_vla_test probe_marginal --ros-args -p headless:=true
+In any mode, type "save" + Enter to dump the current plots and camera frames to
+a timestamped folder under /tmp. Headless mode auto-selects a non-GUI backend.
+
 Requirements:
   - ROS2 sourced
   - lerobot venv sourced
   - CUDA GPU available (N-way batch is heavier than a single inference)
 """
 
+import os
 import sys
 import threading
 import time
+from datetime import datetime
 
 import cv2
 import matplotlib
 
-matplotlib.use("TkAgg")  # interactive backend; falls back below if unavailable
+# The matplotlib backend must be chosen before pyplot is imported, but ROS params
+# aren't available that early — so sniff argv / DISPLAY here. Headless picks the
+# non-interactive Agg backend (no windows, save-to-file only).
+_HEADLESS = any("headless:=true" in a.lower() for a in sys.argv) or not os.environ.get("DISPLAY")
+matplotlib.use("Agg" if _HEADLESS else "TkAgg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import rclpy  # noqa: E402
@@ -99,6 +110,11 @@ class ProbeMarginalNode(Node):
         # Don't re-probe on every broker request (they arrive as fast as we reply).
         # Re-run the N-sample sweep at most once per this many seconds.
         self.declare_parameter("probe_interval_sec", 2.0)
+
+        # No live GUI windows; only saves to disk on the "save" command. The actual
+        # backend was already chosen from argv/DISPLAY at import time (_HEADLESS);
+        # this param just keeps the two in sync and controls imshow/pause calls.
+        self.declare_parameter("headless", _HEADLESS)
 
         # torch.compile (max-autotune) is baked into some checkpoint configs; it
         # fights the variable batch size we use here, so disable it by default.
