@@ -159,23 +159,72 @@ class ProbeMarginalNode(Node):
             pretrained_path=model_path,
         )
 
+        self._headless = self.get_parameter("headless").get_parameter_value().bool_value
+
         self._lock = threading.Lock()
         self._last_probe_t = 0.0
 
-        # Matplotlib figure (created once, updated in place). cv2 windows are created
-        # lazily on first frame. All GUI work happens on the executor/main thread
-        # because rclpy.spin runs the service callback there.
-        plt.ion()
+        # Latest probe results, retained so the "save" command can dump them.
+        self._last_grip: np.ndarray | None = None
+        self._last_base_bgr: np.ndarray | None = None
+        self._last_wrist_bgr: np.ndarray | None = None
+
+        # Matplotlib figure (created once, updated in place). In GUI mode it is shown
+        # live; in headless mode it is only ever rendered to file. All GUI work
+        # happens on the executor/main thread because rclpy.spin runs the callback there.
+        if not self._headless:
+            plt.ion()
         self._fig, (self._ax_hist, self._ax_fan) = plt.subplots(1, 2, figsize=(12, 5))
-        self._fig.canvas.manager.set_window_title("PI0 gripper marginal probe")
+        if not self._headless:
+            self._fig.canvas.manager.set_window_title("PI0 gripper marginal probe")
 
         self._srv = self.create_service(
             GetActionChunk, "get_action_chunk", self._handle_get_action_chunk
         )
         self.get_logger().info(
-            "ProbeMarginalNode ready, serving /get_action_chunk. "
-            "Replies STATUS_PAUSED so the broker holds the arm still."
+            f"ProbeMarginalNode ready ({'headless' if self._headless else 'GUI'} mode), "
+            "serving /get_action_chunk. Replies STATUS_PAUSED so the broker holds the arm still."
         )
+        self.get_logger().info("Type 'save' + Enter to write the current plots/frames to /tmp.")
+
+        # Stdin listener for the "save" command (daemon so it dies with the process).
+        self._input_thread = threading.Thread(target=self._stdin_listener, daemon=True)
+        self._input_thread.start()
+
+    # ------------------------------------------------------------------
+    # Terminal command listener
+    # ------------------------------------------------------------------
+
+    def _stdin_listener(self) -> None:
+        for line in sys.stdin:
+            cmd = line.strip().lower()
+            if cmd in ("save", "s"):
+                self._save()
+            elif cmd:
+                self.get_logger().warn(f"Unknown command: '{cmd}'. Use 'save'.")
+
+    def _save(self) -> None:
+        with self._lock:
+            grip = None if self._last_grip is None else self._last_grip.copy()
+            base = None if self._last_base_bgr is None else self._last_base_bgr.copy()
+            wrist = None if self._last_wrist_bgr is None else self._last_wrist_bgr.copy()
+        if grip is None:
+            self.get_logger().warn("Nothing to save yet — no probe has run.")
+            return
+
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_dir = os.path.join("/tmp", f"probe_marginal_{stamp}")
+        os.makedirs(out_dir, exist_ok=True)
+
+        self._fig.savefig(os.path.join(out_dir, "gripper_marginal.png"), dpi=150,
+                          bbox_inches="tight")
+        np.save(os.path.join(out_dir, "gripper_samples.npy"), grip)  # (N, chunk)
+        if base is not None:
+            cv2.imwrite(os.path.join(out_dir, "base_camera.png"), base)
+        if wrist is not None:
+            cv2.imwrite(os.path.join(out_dir, "wrist_camera.png"), wrist)
+
+        self.get_logger().info(f"Saved probe outputs to {out_dir}")
 
     # ------------------------------------------------------------------
     # Service callback — runs on the executor (main) thread
@@ -214,6 +263,9 @@ class ProbeMarginalNode(Node):
 
         wrist_bgr = _decode_compressed(request.wrist_image)
         base_bgr = _decode_compressed(request.base_image)
+        with self._lock:
+            self._last_base_bgr = base_bgr
+            self._last_wrist_bgr = wrist_bgr
         self._show_cameras(base_bgr, wrist_bgr)
 
         prompt = self.get_parameter("prompt").get_parameter_value().string_value
@@ -243,6 +295,8 @@ class ProbeMarginalNode(Node):
 
         actions = actions[:, :, :_NUM_JOINTS]  # (N, chunk, 6)
         grip = actions[..., _GRIPPER_INDEX].float().cpu().numpy()  # (N, chunk)
+        with self._lock:
+            self._last_grip = grip
         self.get_logger().info(
             f"Probed N={grip.shape[0]} samples, chunk={grip.shape[1]} in {dt:.2f}s "
             f"(gripper step0: mean={grip[:, 0].mean():.4f} std={grip[:, 0].std():.4f})"
@@ -287,10 +341,13 @@ class ProbeMarginalNode(Node):
         self._ax_fan.legend(loc="best")
 
         self._fig.tight_layout()
-        self._fig.canvas.draw_idle()
-        plt.pause(0.001)  # let the GUI event loop run
+        if not self._headless:
+            self._fig.canvas.draw_idle()
+            plt.pause(0.001)  # let the GUI event loop run
 
     def _show_cameras(self, base_bgr: np.ndarray, wrist_bgr: np.ndarray) -> None:
+        if self._headless:
+            return
         if base_bgr is not None:
             cv2.imshow("base camera", base_bgr)
         if wrist_bgr is not None:
