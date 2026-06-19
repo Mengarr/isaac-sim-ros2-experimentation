@@ -63,9 +63,11 @@ from rclpy.node import Node  # noqa: E402
 from pre_trained_vla_test_interfaces.srv import GetActionChunk  # noqa: E402
 
 from lerobot.configs.policies import PreTrainedConfig  # noqa: E402
+from lerobot.configs.types import FeatureType, NormalizationMode  # noqa: E402
 from lerobot.policies import make_pre_post_processors  # noqa: E402
 from lerobot.policies.pi0 import PI0Policy  # noqa: E402
 from lerobot.policies.pi05 import PI05Policy  # noqa: E402
+from lerobot.utils.constants import ACTION  # noqa: E402
 
 _POLICY_CLASSES = {
     "pi0": PI0Policy,
@@ -159,6 +161,20 @@ class ProbeMarginalNode(Node):
             pretrained_path=model_path,
         )
 
+        # Full meaningful output range of the gripper command, derived from the
+        # action normalization stats, so the plots show where samples fall within
+        # the entire space of possible outputs (fixed axes, not autoscaled).
+        self._grip_range = self._gripper_output_range()
+        if self._grip_range is not None:
+            self.get_logger().info(
+                f"Gripper output range (post-processed): "
+                f"[{self._grip_range[0]:.4f}, {self._grip_range[1]:.4f}]"
+            )
+        else:
+            self.get_logger().warn(
+                "Could not derive gripper output range from stats; plots will autoscale."
+            )
+
         self._headless = self.get_parameter("headless").get_parameter_value().bool_value
 
         self._lock = threading.Lock()
@@ -225,6 +241,46 @@ class ProbeMarginalNode(Node):
             cv2.imwrite(os.path.join(out_dir, "wrist_camera.png"), wrist)
 
         self.get_logger().info(f"Saved probe outputs to {out_dir}")
+
+    # ------------------------------------------------------------------
+    # Output-range derivation (for fixed plot axes)
+    # ------------------------------------------------------------------
+
+    def _gripper_output_range(self) -> tuple[float, float] | None:
+        """Full meaningful range of the post-processed gripper command.
+
+        Walks the postprocessor's steps for the action normalization stats and maps
+        them to a (lo, hi) span for the gripper dim:
+          - MIN_MAX           -> [min, max]
+          - QUANTILES         -> [q01, q99]
+          - QUANTILE10        -> [q10, q90]
+          - MEAN_STD          -> [mean - 3*std, mean + 3*std]  (no hard bound)
+        Returns None if it can't find usable stats.
+        """
+        for step in getattr(self._postprocessor, "steps", []):
+            tstats = getattr(step, "_tensor_stats", None)
+            norm_map = getattr(step, "norm_map", None)
+            if not tstats or ACTION not in tstats or not norm_map:
+                continue
+            mode = norm_map.get(FeatureType.ACTION)
+            stats = {k: v.detach().float().cpu().numpy() for k, v in tstats[ACTION].items()}
+            g = _GRIPPER_INDEX
+
+            def at(name):
+                return float(stats[name].reshape(-1)[g])
+
+            try:
+                if mode == NormalizationMode.MIN_MAX and {"min", "max"} <= stats.keys():
+                    return at("min"), at("max")
+                if mode == NormalizationMode.QUANTILES and {"q01", "q99"} <= stats.keys():
+                    return at("q01"), at("q99")
+                if mode == NormalizationMode.QUANTILE10 and {"q10", "q90"} <= stats.keys():
+                    return at("q10"), at("q90")
+                if mode == NormalizationMode.MEAN_STD and {"mean", "std"} <= stats.keys():
+                    return at("mean") - 3.0 * at("std"), at("mean") + 3.0 * at("std")
+            except (KeyError, IndexError):
+                return None
+        return None
 
     # ------------------------------------------------------------------
     # Service callback — runs on the executor (main) thread
@@ -322,13 +378,27 @@ class ProbeMarginalNode(Node):
         n, chunk = grip.shape
         ts = np.arange(chunk)
 
+        # Fixed axes spanning the full possible gripper-command range, so the
+        # distribution is shown relative to the entire output space (not autoscaled
+        # to the sampled spread). Falls back to autoscale if the range is unknown.
+        nbins = min(40, max(10, n // 2))
+        if self._grip_range is not None:
+            lo, hi = self._grip_range
+            pad = 0.02 * (hi - lo) if hi > lo else 0.1
+            xlim = (lo - pad, hi + pad)
+            bins = np.linspace(lo, hi, nbins + 1)
+        else:
+            xlim = None
+            bins = nbins
+
         # Histogram of the gripper command at the first timestep.
         self._ax_hist.clear()
-        self._ax_hist.hist(grip[:, 0], bins=min(40, max(10, n // 2)), color="#4c72b0",
-                           edgecolor="white")
+        self._ax_hist.hist(grip[:, 0], bins=bins, color="#4c72b0", edgecolor="white")
         self._ax_hist.set_title(f"Gripper command @ step 0  (N={n})")
         self._ax_hist.set_xlabel("gripper command")
         self._ax_hist.set_ylabel("count")
+        if xlim is not None:
+            self._ax_hist.set_xlim(*xlim)
 
         # Spaghetti / fan plot over the whole chunk.
         self._ax_fan.clear()
@@ -338,6 +408,8 @@ class ProbeMarginalNode(Node):
         self._ax_fan.set_title("Gripper command across the chunk")
         self._ax_fan.set_xlabel("timestep within chunk")
         self._ax_fan.set_ylabel("gripper command")
+        if xlim is not None:
+            self._ax_fan.set_ylim(*xlim)  # full output range on the command axis
         self._ax_fan.legend(loc="best")
 
         self._fig.tight_layout()
