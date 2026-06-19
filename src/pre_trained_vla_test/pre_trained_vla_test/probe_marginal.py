@@ -113,9 +113,10 @@ class ProbeMarginalNode(Node):
         # Re-run the N-sample sweep at most once per this many seconds.
         self.declare_parameter("probe_interval_sec", 2.0)
 
-        # For MEAN_STD-normalized actions there is no hard output bound, so the
-        # plotted gripper range is mean ± (this many) standard deviations.
-        self.declare_parameter("mean_std_range", 3.0)
+        # Explicit gripper-command plot range. When both are finite they override the
+        # range derived from the action normalization stats (NaN = "not set").
+        self.declare_parameter("yrange_min", float("nan"))
+        self.declare_parameter("yrange_max", float("nan"))
 
         # No live GUI windows; only saves to disk on the "save" command. The actual
         # backend was already chosen from argv/DISPLAY at import time (_HEADLESS);
@@ -165,23 +166,26 @@ class ProbeMarginalNode(Node):
             pretrained_path=model_path,
         )
 
-        self._mean_std_range = (
-            self.get_parameter("mean_std_range").get_parameter_value().double_value
-        )
-
-        # Full meaningful output range of the gripper command, derived from the
-        # action normalization stats, so the plots show where samples fall within
-        # the entire space of possible outputs (fixed axes, not autoscaled).
-        self._grip_range = self._gripper_output_range()
-        if self._grip_range is not None:
-            self.get_logger().info(
-                f"Gripper output range (post-processed): "
-                f"[{self._grip_range[0]:.4f}, {self._grip_range[1]:.4f}]"
-            )
+        # Fixed gripper-command plot range. An explicit yrange_min/yrange_max pair
+        # takes priority; otherwise it is derived from the action normalization stats
+        # so the plots show where samples fall within the space of possible outputs.
+        ymin = self.get_parameter("yrange_min").get_parameter_value().double_value
+        ymax = self.get_parameter("yrange_max").get_parameter_value().double_value
+        if np.isfinite(ymin) and np.isfinite(ymax) and ymax > ymin:
+            self._grip_range = (ymin, ymax)
+            self.get_logger().info(f"Gripper plot range (manual): [{ymin:.4f}, {ymax:.4f}]")
         else:
-            self.get_logger().warn(
-                "Could not derive gripper output range from stats; plots will autoscale."
-            )
+            self._grip_range = self._gripper_output_range()
+            if self._grip_range is not None:
+                self.get_logger().info(
+                    f"Gripper output range (from stats): "
+                    f"[{self._grip_range[0]:.4f}, {self._grip_range[1]:.4f}]"
+                )
+            else:
+                self.get_logger().warn(
+                    "No yrange_min/max given and could not derive range from stats; "
+                    "plots will autoscale."
+                )
 
         self._headless = self.get_parameter("headless").get_parameter_value().bool_value
 
@@ -262,7 +266,8 @@ class ProbeMarginalNode(Node):
           - MIN_MAX           -> [min, max]
           - QUANTILES         -> [q01, q99]
           - QUANTILE10        -> [q10, q90]
-          - MEAN_STD          -> [mean - k*std, mean + k*std]  (k = mean_std_range param)
+          - MEAN_STD          -> [mean - 3*std, mean + 3*std]  (no hard bound; pass
+                                 yrange_min/yrange_max to set this explicitly)
         Returns None if it can't find usable stats.
         """
         for step in getattr(self._postprocessor, "steps", []):
@@ -285,8 +290,7 @@ class ProbeMarginalNode(Node):
                 if mode == NormalizationMode.QUANTILE10 and {"q10", "q90"} <= stats.keys():
                     return at("q10"), at("q90")
                 if mode == NormalizationMode.MEAN_STD and {"mean", "std"} <= stats.keys():
-                    k = self._mean_std_range
-                    return at("mean") - k * at("std"), at("mean") + k * at("std")
+                    return at("mean") - 3.0 * at("std"), at("mean") + 3.0 * at("std")
             except (KeyError, IndexError):
                 return None
         return None
