@@ -113,6 +113,10 @@ class ProbeMarginalNode(Node):
         # Re-run the N-sample sweep at most once per this many seconds.
         self.declare_parameter("probe_interval_sec", 2.0)
 
+        # For MEAN_STD-normalized actions there is no hard output bound, so the
+        # plotted gripper range is mean ± (this many) standard deviations.
+        self.declare_parameter("mean_std_range", 3.0)
+
         # No live GUI windows; only saves to disk on the "save" command. The actual
         # backend was already chosen from argv/DISPLAY at import time (_HEADLESS);
         # this param just keeps the two in sync and controls imshow/pause calls.
@@ -159,6 +163,10 @@ class ProbeMarginalNode(Node):
         self._preprocessor, self._postprocessor = make_pre_post_processors(
             self._policy.config,
             pretrained_path=model_path,
+        )
+
+        self._mean_std_range = (
+            self.get_parameter("mean_std_range").get_parameter_value().double_value
         )
 
         # Full meaningful output range of the gripper command, derived from the
@@ -254,7 +262,7 @@ class ProbeMarginalNode(Node):
           - MIN_MAX           -> [min, max]
           - QUANTILES         -> [q01, q99]
           - QUANTILE10        -> [q10, q90]
-          - MEAN_STD          -> [mean - 3*std, mean + 3*std]  (no hard bound)
+          - MEAN_STD          -> [mean - k*std, mean + k*std]  (k = mean_std_range param)
         Returns None if it can't find usable stats.
         """
         for step in getattr(self._postprocessor, "steps", []):
@@ -277,7 +285,8 @@ class ProbeMarginalNode(Node):
                 if mode == NormalizationMode.QUANTILE10 and {"q10", "q90"} <= stats.keys():
                     return at("q10"), at("q90")
                 if mode == NormalizationMode.MEAN_STD and {"mean", "std"} <= stats.keys():
-                    return at("mean") - 3.0 * at("std"), at("mean") + 3.0 * at("std")
+                    k = self._mean_std_range
+                    return at("mean") - k * at("std"), at("mean") + k * at("std")
             except (KeyError, IndexError):
                 return None
         return None
