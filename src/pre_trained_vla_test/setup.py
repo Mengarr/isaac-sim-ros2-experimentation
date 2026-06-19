@@ -27,6 +27,7 @@ setup(
             'pi0_inference = pre_trained_vla_test.pi0_inference:main',
             'pi0_inference_server = pre_trained_vla_test.pi0_inference_server:main',
             'pi0_inference_broker = pre_trained_vla_test.pi0_inference_broker:main',
+            'probe_marginal = pre_trained_vla_test.probe_marginal:main',
             'act_inference = pre_trained_vla_test.act_inference:main',
         ],
     },
