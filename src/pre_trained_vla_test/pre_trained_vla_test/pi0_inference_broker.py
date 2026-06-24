@@ -68,12 +68,21 @@ _NUM_JOINTS = len(_JOINT_NAMES)
 _CONTROL_HZ = 30.0
 
 
-def _ros_image_to_compressed(msg: Image, jpeg_quality: int) -> CompressedImage:
-    """Re-encode a raw sensor_msgs/Image as a JPEG-compressed sensor_msgs/CompressedImage."""
+def _ros_image_to_compressed(
+    msg: Image, jpeg_quality: int, blackout: bool = False
+) -> CompressedImage:
+    """Re-encode a raw sensor_msgs/Image as a JPEG-compressed sensor_msgs/CompressedImage.
+
+    If `blackout` is set, the image content is zeroed before encoding (used for
+    model short-cutting ablations — the server still receives a frame of the
+    expected shape, just with no information in it).
+    """
     data = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, -1)
     bgr = data[:, :, :3]
     if msg.encoding.lower() != "bgr8":
         bgr = cv2.cvtColor(bgr, cv2.COLOR_RGB2BGR)
+    if blackout:
+        bgr = np.zeros_like(bgr)
     ok, encoded = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
     if not ok:
         raise RuntimeError("JPEG encoding failed")
@@ -173,6 +182,18 @@ class PI0InferenceBrokerNode(Node):
         self.declare_parameter("jpeg_quality", 80)
         self._jpeg_quality = self.get_parameter("jpeg_quality").get_parameter_value().integer_value
 
+        # Model short-cutting ablation: black out one or both camera streams
+        # before they're sent to the server, to test whether the model is
+        # actually using that view or just shortcutting on the other one.
+        self.declare_parameter("blackout_wrist_camera", False)
+        self._blackout_wrist_camera = (
+            self.get_parameter("blackout_wrist_camera").get_parameter_value().bool_value
+        )
+        self.declare_parameter("blackout_base_camera", False)
+        self._blackout_base_camera = (
+            self.get_parameter("blackout_base_camera").get_parameter_value().bool_value
+        )
+
         # RTC: synchronous re-planning. When enabled, the control loop executes
         # execution_horizon actions per chunk, then stops and requests the next one
         # (inference_delay is always 0). When disabled, it uses the legacy
@@ -194,6 +215,19 @@ class PI0InferenceBrokerNode(Node):
         self._pre_request_delay_sec = (
             self.get_parameter("pre_request_delay_sec").get_parameter_value().double_value
         )
+
+        # Joint positions the robot is commanded to on `reset`, so it returns to a
+        # known home pose instead of holding wherever the last chunk left it. The
+        # sim's home pose is all zeros (see sim_launcher.py).
+        self.declare_parameter("reset_pose", [0.0] * _NUM_JOINTS)
+        reset_pose = list(self.get_parameter("reset_pose").get_parameter_value().double_array_value)
+        if len(reset_pose) != _NUM_JOINTS:
+            self.get_logger().warn(
+                f"reset_pose has {len(reset_pose)} values, expected {_NUM_JOINTS}; "
+                "falling back to all-zeros."
+            )
+            reset_pose = [0.0] * _NUM_JOINTS
+        self._reset_pose = np.array(reset_pose, dtype=np.float32)
 
         self._lock = threading.Lock()
         self._action_queue = ActionQueue(self._rtc_enabled, self._execution_horizon)
@@ -231,6 +265,11 @@ class PI0InferenceBrokerNode(Node):
             else "disabled"
         )
         self.get_logger().info(f"PI0InferenceBrokerNode ready (RTC {rtc_status}).")
+        if self._blackout_wrist_camera or self._blackout_base_camera:
+            self.get_logger().warn(
+                f"Camera blackout ablation active: wrist={self._blackout_wrist_camera}, "
+                f"base={self._blackout_base_camera}."
+            )
         self.get_logger().info("Commands: pause | resume | reset")
 
         # Service-request and stdin run on their own threads so they don't block the executor
@@ -272,7 +311,12 @@ class PI0InferenceBrokerNode(Node):
                 self._action_queue.clear()
                 self._chunk_done.set()
                 self._paused = True
-                self.get_logger().info("Reset. Type 'resume' to start requesting chunks.")
+                # Drive the robot back to the home pose instead of holding the last
+                # commanded position, and forget that position so a later resume
+                # starts from home.
+                self._last_command = self._reset_pose.copy()
+                self._publish_command(self._reset_pose)
+                self.get_logger().info("Reset to home pose. Type 'resume' to start requesting chunks.")
             else:
                 self.get_logger().warn(f"Unknown command: '{cmd}'. Use pause | resume | reset.")
 
@@ -336,8 +380,12 @@ class PI0InferenceBrokerNode(Node):
         # new_chunk[i]; inference_delay is always 0 (nothing committed during the
         # round trip).
         with self._lock:
-            wrist_compressed = _ros_image_to_compressed(self._obs_wrist, self._jpeg_quality)
-            base_compressed = _ros_image_to_compressed(self._obs_base, self._jpeg_quality)
+            wrist_compressed = _ros_image_to_compressed(
+                self._obs_wrist, self._jpeg_quality, blackout=self._blackout_wrist_camera
+            )
+            base_compressed = _ros_image_to_compressed(
+                self._obs_base, self._jpeg_quality, blackout=self._blackout_base_camera
+            )
             joint_state = self._joint_state
 
         leftover = self._action_queue.get_left_over() if self._rtc_enabled else None
@@ -427,6 +475,9 @@ class PI0InferenceBrokerNode(Node):
                 # execution_horizon actions for RTC) — trigger the next request.
                 self._chunk_done.set()
 
+        self._publish_command(action)
+
+    def _publish_command(self, action: np.ndarray) -> None:
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.name = _JOINT_NAMES

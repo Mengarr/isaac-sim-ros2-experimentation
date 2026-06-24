@@ -32,6 +32,7 @@ class DatasetRecorderNode(Node):
         self.declare_parameter("dataset_name", "so101_dataset")
         self.declare_parameter("output_dir", "")
         self.declare_parameter("streaming_encoding", False)
+        self.declare_parameter("resume", False)
 
         self._num_episodes = self.get_parameter("num_episodes").value
         self._episode_duration = self.get_parameter("episode_duration").value
@@ -40,6 +41,7 @@ class DatasetRecorderNode(Node):
         self._dataset_name = self.get_parameter("dataset_name").value
         output_dir = self.get_parameter("output_dir").value
         self._streaming_encoding = self.get_parameter("streaming_encoding").value
+        self._resume = self.get_parameter("resume").value
 
         self._root = Path(output_dir).expanduser() if output_dir else None
 
@@ -170,6 +172,27 @@ class DatasetRecorderNode(Node):
             n_joints = len(self._joint_state)
 
         joint_names = list(self._joint_names) if self._joint_names else [str(i) for i in range(n_joints)]
+
+        if self._resume:
+            if self._root is None:
+                raise ValueError("resume=True requires output_dir to point at the existing dataset.")
+            self._dataset = LeRobotDataset.resume(
+                repo_id=self._dataset_name,
+                root=self._root,
+                image_writer_threads=0 if self._streaming_encoding else 4,
+                streaming_encoding=self._streaming_encoding,
+            )
+            self._check_resume_compatibility(wrist_shape, base_shape, n_joints, joint_names)
+            self._episode_idx = self._dataset.meta.total_episodes
+            self._dataset_ready = True
+            self._state = State.IDLE
+            self.get_logger().info(
+                f"All sensors ready. Resumed dataset '{self._dataset_name}' with "
+                f"{self._episode_idx} existing episodes. Joints: {self._joint_names}. "
+                f"Press Enter to start episode {self._episode_idx + 1} of {self._num_episodes}."
+            )
+            return
+
         features = {
             "observation.images.wrist": {"dtype": "video", "shape": wrist_shape, "names": ["height", "width", "channel"]},
             "observation.images.base": {"dtype": "video", "shape": base_shape, "names": ["height", "width", "channel"]},
@@ -198,6 +221,43 @@ class DatasetRecorderNode(Node):
             f"Joints: {self._joint_names}. "
             f"Press Enter to start episode 1 of {self._num_episodes}."
         )
+
+    def _check_resume_compatibility(self, wrist_shape, base_shape, n_joints, joint_names) -> None:
+        """Fail fast if live sensor shapes don't match the resumed dataset's schema.
+
+        Appending frames with a different shape/dtype than the existing metadata
+        would silently corrupt the dataset, so we abort before recording.
+        """
+        meta_features = self._dataset.meta.features
+        expected = {
+            "observation.images.wrist": tuple(wrist_shape),
+            "observation.images.base": tuple(base_shape),
+            "observation.state": (n_joints,),
+            "action": (n_joints,),
+        }
+
+        mismatches = []
+        for key, live_shape in expected.items():
+            if key not in meta_features:
+                mismatches.append(f"{key}: missing from existing dataset")
+                continue
+            old_shape = tuple(meta_features[key]["shape"])
+            if old_shape != live_shape:
+                mismatches.append(f"{key}: existing {old_shape} != live {live_shape}")
+
+        old_joint_names = meta_features.get("observation.state", {}).get("names")
+        if old_joint_names is not None and list(old_joint_names) != list(joint_names):
+            mismatches.append(
+                f"joint order/names differ: existing {list(old_joint_names)} != live {list(joint_names)}"
+            )
+
+        if mismatches:
+            raise ValueError(
+                "Cannot resume — recorded data is incompatible with the existing dataset:\n  "
+                + "\n  ".join(mismatches)
+            )
+
+        self.get_logger().info("Resume compatibility check passed — sensor shapes match existing dataset.")
 
     def _check_start(self) -> None:
         if self._start_event.is_set():
