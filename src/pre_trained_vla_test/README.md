@@ -136,9 +136,9 @@ Both nodes need ROS2 with the same `ROS_DOMAIN_ID` (or otherwise routable DDS di
 
 ```bash
 source /opt/ros/jazzy/setup.bash
-source ~/lerobot/.venv/bin/activate
 cd ~/repos/isaac-sim-ros2-experimentation
 colcon build --packages-select pre_trained_vla_test_interfaces pre_trained_vla_test
+source ~/lerobot/.venv/bin/activate
 source install/setup.bash
 
 python install/pre_trained_vla_test/lib/pre_trained_vla_test/pi0_inference_server \

@@ -51,7 +51,9 @@ RUN curl -L "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/a
 # Environment for interactive (SSH) shells. Set here rather than via docker
 # `-e`, because Vast SSH sessions spawn a fresh login shell that does NOT
 # inherit the container PID 1 environment.
-RUN echo 'export HF_HOME=/workspace/.cache' >> /root/.bashrc
+RUN echo 'export HF_HOME=/workspace/.cache' >> /root/.bashrc \
+    && echo '[ -d /workspace ] && cd /workspace' >> /root/.bashrc \
+    && echo '[ -f /workspace/repos/lerobot/.venv/bin/activate ] && source /workspace/repos/lerobot/.venv/bin/activate' >> /root/.bashrc
 
 # ---------------------------------------------------------------------------
 # Runtime init: clones repos + sets up the uv venv into the persistent

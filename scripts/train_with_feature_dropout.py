@@ -38,7 +38,6 @@ Example:
         --state_dropout_mode=elementwise
 """
 
-import logging
 import sys
 
 import torch
@@ -147,7 +146,9 @@ lt.update_policy = _update_policy_with_dropout
 
 
 def main():
-    logging.getLogger(__name__).info("Input-feature dropout: %s", DROPOUT.summary())
+    # Printed (not logged) because this runs before train() calls init_logging(),
+    # when the root logger is still at WARNING and would drop INFO records.
+    print(f"[feature-dropout] {DROPOUT.summary()}", flush=True)
     lt.main()
 
 

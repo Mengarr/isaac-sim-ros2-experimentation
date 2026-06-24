@@ -72,7 +72,9 @@ RUN curl -L "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/a
 # inherit the container PID 1 environment.
 RUN echo 'source /opt/ros/jazzy/setup.bash' >> /root/.bashrc \
     && echo 'export RMW_IMPLEMENTATION=rmw_zenoh_cpp' >> /root/.bashrc \
-    && echo 'export HF_HOME=/workspace/.cache' >> /root/.bashrc
+    && echo 'export HF_HOME=/workspace/.cache' >> /root/.bashrc \
+    && echo '[ -d /workspace ] && cd /workspace' >> /root/.bashrc \
+    && echo '[ -f /workspace/repos/lerobot/.venv/bin/activate ] && source /workspace/repos/lerobot/.venv/bin/activate' >> /root/.bashrc
 
 # ---------------------------------------------------------------------------
 # Runtime init: clones repos + sets up the uv venv into the persistent
