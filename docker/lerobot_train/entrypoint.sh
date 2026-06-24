@@ -59,6 +59,7 @@ if [ ! -d "$LEROBOT/.venv" ]; then
     uv sync
     uv pip install -e ".[pi,dataset,training,sarm]"
     uv pip install peft
+    uv pip install wandb
     popd >/dev/null
 else
     log "lerobot uv venv already present, skipping setup."

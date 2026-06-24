@@ -28,6 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         python3-venv \
         unzip \
+        ffmpeg \
     && add-apt-repository universe \
     && rm -rf /var/lib/apt/lists/*
 

@@ -17,7 +17,7 @@ Run from this directory (the build context is `.` so the Dockerfile can
 docker login -u mengar
 
 # 2. Build (also tag a version alongside :latest so you can roll back)
-docker build -t mengar/lerobot_inference:latest -t mengar/lerobot_inference:v1 -f Dockerfile .
+docker build -t mengar/lerobot_inference:latest -f Dockerfile .
 
 # 3. Push
 docker push mengar/lerobot_inference:latest
